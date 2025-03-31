@@ -1,0 +1,4110 @@
+---
+title: "KzSynITScom_metadata_prep"
+author: "Charles T. Bond"
+date: "09/09/2023"
+output: html_document
+---
+### Setup
+```{r setup, include=FALSE}
+rm(list = ls())
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/Users/chunk/AIMS_Konza_synoptic_ITS_community/eukaryotes")
+knitr::opts_knit$set(root.dir = "/Users/chunk/AIMS_Konza_synoptic_ITS_community/eukaryotes")
+```
+
+```{r, library}
+#library(dada2)
+library(phyloseq)
+library(vegan)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(pheatmap)
+library(GUniFrac)
+library(metagMisc)
+library(raster)
+library(pals)
+library(RColorBrewer)
+library(ragg)
+library(ggpubr)
+```
+
+Now the our libraries are loaded,
+## Set Theme
+Setting themes determines how our figures will look, readability and publishability. This can be modified later, but here is the starting point:
+```{r, theme}
+#Set theme
+theme_set(theme_bw() + theme(
+              plot.title = element_text(size=15, color="black"),
+              axis.text.x = element_text(size=15, color="black"),
+              axis.text.y = element_text(size=15, color="black"),
+              axis.title.x = element_text(size=15),
+              axis.title.y = element_text(size=15),
+              legend.text = element_text(size=12),
+              legend.title = element_text(size=15),
+              legend.position = "bottom",
+              legend.key=element_blank(),
+              legend.key.size = unit(0.5, "cm"),
+              legend.spacing.x = unit(0.1, "cm"),
+              legend.spacing.y = unit(0.1, "cm"),
+              panel.background = element_blank(), 
+              panel.border = element_rect(colour = "black", fill=NA, size=1),
+              plot.background = element_blank()))
+```
+
+
+
+# Statistical Analysis
+## Data Curation
+Rarefication, focusing on a subsample for diversity analyses. Comparing samples with 50K reads versus samples with <5k reads is highly confounded, since we can't say whether the difference in reads is due to real ecological diffeerences or just PCR inhibitors, etc... so we subsample each sample to get a common number, ideally between 1K and 5K seqs, which could force us to sacrifice samples with low seq reads. Let's looks again at what we have to work with:
+
+
+# non-RAREFIED, all eukaryotes ITS1 data
+
+Need to rarefy using the cured ASVs before constructing the final phyloseq object:
+```{r}
+setwd('/Users/chunk/AIMS_Konza_synoptic_ITS_community/phyloseq_tabs')
+
+#Create phyloseq object
+#read in files
+asvtab <- read.table("full_euk_4-10-2022.count_table", header=T, row.names=1,
+                   check.names=F, sep="\t")
+asvtab<- asvtab[row.names(asvtab) != 'neg_1',]
+asvtab<- asvtab[row.names(asvtab) != 'neg_2',]
+asvtab<- asvtab[row.names(asvtab) != 'neg_3',]
+#row.names(asvtab)<- gsub("-", "_", row.names(asvtab))
+
+### taxtab for full eukaryote list
+taxtab <- as.matrix(read.csv("full_euk_ensembleTax_tab_kzsyn_04112023.csv", header = T, row.names=1))
+metadata_full <- read.csv("submetatab.csv", row.names=1)
+metadata_full$substrate <- as.factor(metadata_full$substrate)
+metadata_full<-metadata_full[metadata_full$substrate!='W',]
+
+asvtab <- otu_table(asvtab, taxa_are_rows = FALSE)
+taxtab <- tax_table(taxtab)
+metadata <- sample_data(metadata_full)
+#combine into phyloseq object
+pseqtest <- phyloseq(asvtab, taxtab, metadata)
+#extract easy-to-use sample data
+samdftest <- data.frame(sample_data(pseqtest))
+
+cured_asvs<- pseqtest@otu_table
+summary(rowSums(cured_asvs))
+
+### remove samples with less than 1000 reads, that's our psychological minimum read depth, so we can better evaluate read depth across our viable samples...
+cured_asvs <- cured_asvs[rowSums(cured_asvs)>1079,]
+#remove ASVs with zero reads left, we'll do this again aftern rarefying...
+cured_asvs <- cured_asvs[,colSums(cured_asvs)>0]
+summary(rowSums(cured_asvs))
+sum(rowSums(cured_asvs))
+
+## look at read depths for the different substrates:
+asvtab <- cured_asvs
+taxtab <- tax_table(taxtab)
+metadata <- sample_data(metadata_full)
+#combine into phyloseq object
+pseqtest <- phyloseq(asvtab, taxtab, metadata)
+#extract easy-to-use sample data
+samdftest <- data.frame(sample_data(pseqtest))
+
+## Examine the read depths by substrate:
+###Leaf
+summary(rowSums(cured_asvs[pseqtest@sam_data$substrate=="L",]))
+##counttab<- rowSums(cured_asvs[pseqtest@sam_data$substrate=="L",])
+##49 leaf samples
+
+###Biofilm
+summary(rowSums(cured_asvs[pseqtest@sam_data$substrate=="B",]))
+#41 epilithon samples
+
+
+###Sediment
+summary(rowSums(cured_asvs[pseqtest@sam_data$substrate=="S",]))
+##49 samples
+
+###Water
+#summary(rowSums(cured_asvs[pseqtest@sam_data$substrate=="W",]))
+
+### This suggests that for analyses focusing on leaf litter, we might want to rarefy to 5572 reads, whereas analyses including all substrates may need to use a lower threshold to conserve all samples. Furthermore, these values will be even lower if we remove non-fungi, which means we should think carefully about what our different research questions are, and what subsets of this complete dataset would help to answer each given question.  To that end, we should export the component tables of the current phyloseq object and plan out our analyses before returning to 
+unique(samdftest$Site)
+
+```
+
+
+
+## ITS1 eukaryote ACCUMULATION CURVES
+Full eukaryote ASV accumulation curves by substrate.
+```{r}
+library('rgdal')
+library('biosurvey')
+botu<- pseqtest@otu_table[samdftest$substrate=='B',]
+lotu<- pseqtest@otu_table[samdftest$substrate=='L',]
+sotu<- pseqtest@otu_table[samdftest$substrate=='S',]
+#wotu<- pseqtest@otu_table[samdftest$substrate=='W',]
+
+accum_nor_B <- specaccum(botu, method="random")
+accum_nor_L <- specaccum(lotu, method="random")
+accum_nor_S <- specaccum(sotu, method="random")
+#accum_nor_W <- specaccum(wotu, method="random")
+
+plot(accum_nor_S)
+#then plot the rest
+plot(accum_nor_L, add = TRUE, col = 2) #col is COLOUR setting, so change it to something else if you want 
+plot(accum_nor_B, add = TRUE, col = 3)
+#plot(accum_nor_W, add = TRUE, col = 4)
+legend("topright",y=NULL,legend=as.factor(samdftest$substrate),fill=NULL,col = as.factor(samdftest$substrate))
+#legend("topright",threednmds$xyz.convert(18, 0, 12), pch = 1, col = as.factor(samdftest$substrate), yjust=0, legend = as.factor(samdftest$substrate), cex = 1)
+
+#data <- data.frame(Sites=acc$sites, Richness=acc$richness, SD=acc$sd)
+dfb <-data.frame(Sites=accum_nor_B$sites, Richness=accum_nor_B$richness, SD=accum_nor_B$sd)
+dfl <-data.frame(Sites=accum_nor_L$sites, Richness=accum_nor_L$richness, SD=accum_nor_L$sd)
+dfs <-data.frame(Sites=accum_nor_S$sites, Richness=accum_nor_S$richness, SD=accum_nor_S$sd)
+#dfw <-data.frame(Sites=accum_nor_W$sites, Richness=accum_nor_W$richness, SD=accum_nor_W$sd)
+
+
+library(RColorBrewer)
+
+#define custom color scale
+#myColors <- brewer.pal(3, "Spectral")
+myColors <- c("#00BFC4", "#F8766D","#7CAE00"#, #"#C77CFF"
+              )
+names(myColors) <- levels(samdftest$substrate)
+custom_colors <- scale_colour_manual(name = samdftest$substrate, values = myColors)
+
+
+
+
+ASVaccumsub<- ggplot() +
+  geom_point(data=dfl, aes(x=Sites, y=Richness, colour='L')) +
+geom_line(data=dfl, aes(x=Sites, y=Richness,colour='L')) +
+geom_ribbon(data=dfl,aes(x=Sites,
+ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2)+
+
+  geom_point(data=dfb, aes(x=Sites, y=Richness, colour='B')) +
+geom_line(data=dfb, aes(x=Sites, y=Richness, colour='B')) +
+geom_ribbon(data=dfb,aes(x=Sites,
+ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2)+
+  
+  geom_point(data=dfs, aes(x=Sites, y=Richness, colour='S')) +
+geom_line(data=dfs, aes(x=Sites, y=Richness,colour='S')) +
+geom_ribbon(data=dfs,aes(x=Sites,
+ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2) +
+  
+  title(main = "Fungal ASV accumulation curves by substrate")
+  
+#  geom_point(data=dfw, aes(x=Sites, y=Richness, colour='W')) +
+#geom_line(data=dfw, aes(x=Sites, y=Richness,colour='W')) +
+#geom_ribbon(data=dfw,aes(x=Sites,
+#ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2)+
+#  labs(title = "Fungal taxon (ASV) accumulation curves by substrate", y="ASV Richness")+
+#scale_color_discrete(labels=c('Epilithic biofilms', 'Leaf litter', 'Benthic sediment', 'Surface #water'))
+ # custom_colors
+ASVaccumsub
+```
+B=Epilithic Biofilms, L=Leaf litter, S=Sediment. 
+
+Taxa table with eukaryotes.....
+
+
+summary stats
+```{r}
+tax_tib<-as.data.frame(pseqtest@tax_table@.Data)
+unique_gen<-unique(tax_tib$Genus)
+#unique_gen
+unique(tax_tib$Phylum)
+unique(tax_tib$Class)
+unique(tax_tib$Family)
+
+#count(unique(tax_tib$Genus))
+sum(is.na(tax_tib$Genus))
+
+#23% of ASVs not identified to genus
+# 77% of ASVs identified to the genus level, 4258/5580
+
+```
+
+
+Who is there?
+
+
+
+# TAXONOMIC COMPOSITION:
+PHYLUM ~ class ~ family
+Taxonomy table
+```{r}
+phyla_counts_tab <- otu_table(tax_glom(pseqtest, taxrank="Phylum"), taxa_are_rows = FALSE)
+phyla_counts_tab <- t(phyla_counts_tab)
+#make vector of phyla names to set as row names
+phyla_tax_vec <- as.vector(tax_table(tax_glom(pseqtest, taxrank="Phylum"))[,2]) 
+rownames(phyla_counts_tab) <- as.vector(phyla_tax_vec)
+phyla_counts_tab
+write.csv(phyla_counts_tab, 'phyla_counts_nr.csv')
+          
+```
+
+```{r}
+asv_counts <- pseqtest@otu_table
+#determine the number of unclassified seqs at the phylum level
+unclassified_tax_counts <- colSums(t(asv_counts)) - colSums(phyla_counts_tab)
+#Add a row of "unclassified" to the phylum count table
+phyla_and_unidentified_counts_tab <- rbind(phyla_counts_tab, "Unclassified_Phylum"=unclassified_tax_counts)
+
+```
+###
+```{}
+#remove p__Ascomycota for the purpose of separating it into classes later
+temp_major_taxa_counts_tab <- 
+  phyla_and_unidentified_counts_tab[!row.names(phyla_and_unidentified_counts_tab)
+                                    %in% "p__Ascomycota",]
+#make count table broken down by class
+class_counts_tab <- otu_table(tax_glom(t(pseqtest), taxrank="Class"))
+#make table containing phylum and class data
+class_tax_phy_tab <- tax_table(tax_glom(t(pseqtest), taxrank="Class"))
+phy_tmp_vec <- class_tax_phy_tab[,2]
+class_tmp_vec <- class_tax_phy_tab[,3]
+rows_tmp <- row.names(class_tax_phy_tab)
+class_tax_tab <- data.frame("Phylum"=phy_tmp_vec, "Class"=class_tmp_vec, row.names = rows_tmp)
+#make vector of just the p__Ascomycota classes
+asco_classes_vec <- as.vector(class_tax_tab[class_tax_tab$Phylum == "p__Ascomycota", "Class"])
+row.names(class_counts_tab) <- as.vector(class_tax_tab$Class)
+#make table of p__Ascomycota classes
+asco_class_counts_tab <- class_counts_tab[row.names(class_counts_tab) %in% asco_classes_vec, ]
+#make table of p__Ascomycota not identified to the class level
+asco_no_class_annotated_counts <- 
+  phyla_and_unidentified_counts_tab[row.names(phyla_and_unidentified_counts_tab) %in% "p__Ascomycota",]-
+  colSums(asco_class_counts_tab)
+#Now combine the tables
+major_taxa_counts_tab <- rbind(temp_major_taxa_counts_tab, asco_class_counts_tab,
+                               "Unclassified_Ascomycetes"=asco_no_class_annotated_counts)
+View(major_taxa_counts_tab)
+
+```
+```{}
+#remove p__Ascomycota for the purpose of separating it into classes later
+temp_major_taxa_counts_tab <- 
+  phyla_and_unidentified_counts_tab[!row.names(phyla_and_unidentified_counts_tab)
+                                    %in% "p__Ascomycota",]
+#make count table broken down by class
+class_counts_tab <- otu_table(tax_glom(t(pseqtest), taxrank="Class"))
+#make table containing phylum and class data
+class_tax_phy_tab <- tax_table(tax_glom(t(pseqtest), taxrank="Class"))
+phy_tmp_vec <- class_tax_phy_tab[,2]
+class_tmp_vec <- class_tax_phy_tab[,3]
+rows_tmp <- row.names(class_tax_phy_tab)
+class_tax_tab <- data.frame("phylum"=phy_tmp_vec, "class"=class_tmp_vec, row.names = rows_tmp)
+#make vector of just the p__Ascomycota classes
+asco_classes_vec <- as.vector(class_tax_tab[class_tax_tab$phylum == "p__Ascomycota", "Class"])
+row.names(class_counts_tab) <- as.vector(class_tax_tab$class)
+#make table of p__Ascomycota classes
+asco_class_counts_tab <- class_counts_tab[row.names(class_counts_tab) %in% asco_classes_vec, ]
+#make table of p__Ascomycota not identified to the class level
+asco_no_class_annotated_counts <- 
+  phyla_and_unidentified_counts_tab[row.names(phyla_and_unidentified_counts_tab) %in% "p__Ascomycota",]-
+  colSums(asco_class_counts_tab)
+#Now combine the tables
+major_taxa_counts_tab <- rbind(temp_major_taxa_counts_tab, asco_class_counts_tab,
+                               "Unclassified_Ascomycetes"=asco_no_class_annotated_counts)
+View(major_taxa_counts_tab)
+
+```
+
+```{r}
+major_taxa_counts_tab <-phyla_and_unidentified_counts_tab
+write.csv(major_taxa_counts_tab, "eukaryote_phyla_count.table.csv")
+#Check that all sequences are accounted for
+identical(colSums(major_taxa_counts_tab), rowSums(asv_counts))
+## [1] TRUE
+#Convert totals to relative abundance
+major_taxa_proportions_tab <- apply(major_taxa_counts_tab, 2, function(x) x/sum(x)*100)
+#colSums(major_taxa_proportions_tab)
+write.csv(major_taxa_proportions_tab, "eukaryote_phyla_relative abundance.csv")
+
+```
+
+
+by family
+```{r}
+#make taxonomy object by genus
+family_counts_tab <- otu_table(tax_glom(pseqtest, taxrank="Family"), taxa_are_rows = FALSE)
+family_counts_tab <- t(family_counts_tab)
+#make vector of genus names to set as row names
+family_tax_vec <- as.vector(tax_table(tax_glom(pseqtest, taxrank="Family"))[,5]) 
+rownames(family_counts_tab) <- as.vector(family_tax_vec)
+
+#determine the number of unclassified seqs at the family level
+unclassified_family_counts <- colSums(t(asv_counts)) - colSums(family_counts_tab)
+unclassified_family_counts
+#Add a row of "unclassified" to the family count table
+family_and_unidentified_counts_tab <- rbind(family_counts_tab, 
+                                            "Unclassified_family"=unclassified_family_counts)
+write.csv(family_and_unidentified_counts_tab, "euk_family_count.tab.csv")
+#Check that all seqs are accounted for.
+
+identical(colSums(family_and_unidentified_counts_tab), rowSums(asv_counts))
+
+#Convert totals to relative abundance
+family_proportions_tab <- apply(family_and_unidentified_counts_tab, 2, function(x) x/sum(x)*100)
+write.csv(family_proportions_tab, "euk_family_relative_abundance.csv")
+
+```
+
+You can open the raw abundance files and view which taxa were the most abundant. We can use MANOVA to determine which of the phyla that made up >90% of the data differed signficantly by substrate, Watershed, TWI, etc. We can start by merging the metadata with the phylum and family raw abundances for easier analysis.
+```{r}
+#Merge metadata, phylum, and family abundances
+#phy_and_fam <- merge(t(major_taxa_counts_tab), t(family_and_unidentified_counts_tab),
+#                  by="row.names", all=TRUE)
+phy_and_fam <- merge(t(major_taxa_proportions_tab), t(family_proportions_tab),
+                  by="row.names", all=TRUE)
+phyfam <- phy_and_fam[,-1]
+rownames(phyfam) <- phy_and_fam[,1]
+tax_merge <- merge(samdftest, phyfam,
+                  by="row.names", all=TRUE)
+taxmerge <- tax_merge[,-1]
+rownames(taxmerge) <- tax_merge[,1]
+write.csv(tax_merge, "fulleukaryote_taxmerge.csv")
+
+
+```
+Manova of major Taxa
+```{r}
+#MANOVA
+manphy <- manova(cbind(p__Ascomycota, p__Basidiomycota, p__Mortierellomycota, p__Kickxellomycota, p__Rozellomycota, p__Blastocladiomycota,p__Basidiobolomycota, p__Aphelidiomycota, p__Neocallimastigomycota,p__Chytridiomycota, p__Mucoromycota,p__Calcarisporiellomycota,p__Ochrophyta, p__Oomycota,p__Dinophyta, p__Chlorophyta,                    f__Verrucariaceae,f__Eustigmataceae,f__Phaeosphaeriaceae, f__Trichomeriaceae, f__Pleosporaceae) ~ prc_wet*substrate, data=taxmerge)
+hist(manphy$residuals)
+plot(manphy$residuals ~ manphy$fitted.values)
+summary.aov(manphy)
+
+manphy <- manova(cbind(p__Ascomycota, p__Basidiomycota, p__Mortierellomycota, p__Kickxellomycota, p__Rozellomycota, p__Blastocladiomycota,p__Basidiobolomycota, p__Aphelidiomycota, p__Neocallimastigomycota,p__Chytridiomycota, p__Mucoromycota,p__Calcarisporiellomycota,p__Ochrophyta, p__Oomycota,p__Dinophyta, p__Chlorophyta,                    f__Verrucariaceae,f__Eustigmataceae,f__Phaeosphaeriaceae, f__Trichomeriaceae, f__Pleosporaceae) ~ flow_state*substrate, data=taxmerge)
+hist(manphy$residuals)
+plot(manphy$residuals ~ manphy$fitted.values)
+summary.aov(manphy)
+
+manphy <- manova(cbind(p__Ascomycota, p__Basidiomycota, p__Mortierellomycota, p__Kickxellomycota, p__Rozellomycota, p__Blastocladiomycota,p__Basidiobolomycota, p__Aphelidiomycota, p__Neocallimastigomycota,p__Chytridiomycota, p__Mucoromycota,p__Calcarisporiellomycota,p__Ochrophyta, p__Oomycota,p__Dinophyta, p__Chlorophyta,                    f__Verrucariaceae,f__Eustigmataceae,f__Phaeosphaeriaceae, f__Trichomeriaceae, f__Pleosporaceae) ~ tempC_mean*substrate, data=taxmerge)
+hist(manphy$residuals)
+plot(manphy$residuals ~ manphy$fitted.values)
+summary.aov(manphy)
+
+manphy <- manova(cbind(p__Ascomycota, p__Basidiomycota, p__Mortierellomycota, p__Kickxellomycota, p__Rozellomycota, p__Blastocladiomycota,p__Basidiobolomycota, p__Aphelidiomycota, p__Neocallimastigomycota,p__Chytridiomycota, p__Mucoromycota,p__Calcarisporiellomycota,p__Ochrophyta, p__Oomycota,p__Dinophyta, p__Chlorophyta,                    f__Verrucariaceae,f__Eustigmataceae,f__Phaeosphaeriaceae, f__Trichomeriaceae, f__Pleosporaceae) ~ stream_temp_C_1wk_avg*substrate, data=taxmerge)
+hist(manphy$residuals)
+plot(manphy$residuals ~ manphy$fitted.values)
+summary.aov(manphy)
+
+manphy <- manova(cbind(p__Ascomycota, p__Basidiomycota, p__Mortierellomycota, p__Kickxellomycota, p__Rozellomycota, p__Blastocladiomycota,p__Basidiobolomycota, p__Aphelidiomycota, p__Neocallimastigomycota,p__Chytridiomycota, p__Mucoromycota,p__Calcarisporiellomycota,p__Ochrophyta, p__Oomycota,p__Dinophyta, p__Chlorophyta,                    f__Verrucariaceae,f__Eustigmataceae,f__Phaeosphaeriaceae, f__Trichomeriaceae, f__Pleosporaceae) ~ in.eccentricity*substrate, data=taxmerge)
+hist(manphy$residuals)
+plot(manphy$residuals ~ manphy$fitted.values)
+summary.aov(manphy)
+
+
+
+```
+
+###BARPLOT
+```{r}
+#Phylum
+#Select taxa that make up >90% of the total sequences
+phylatrim <- data.frame(major_taxa_proportions_tab[c("p__Ascomycota",                      
+"p__Basidiomycota",                  
+"p__Blastocladiomycota",              
+"p__Mortierellomycota",              
+"p__Kickxellomycota",                
+"p__Rozellomycota",                  
+"p__Aphelidiomycota",                
+"p__Basidiobolomycota",              
+"p__Chytridiomycota",
+"p__Neocallimastigomycota",
+"p__Ochrophyta",             
+"p__Oomycota",   
+"p__Chlorophyta",                    
+"p__Dinophyta",                      
+"p__Stramenopila_phy_Incertae_sedis"
+                                           ), ])
+#write.csv(phylatrim_t,"/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs/phylatrim.csv")
+#write.csv(major_taxa_proportions_tab,"/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/majortaxa.csv")
+#majortaxa <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/majortaxa.csv", row.names=1)
+#View(majortaxa)
+#phylatrim <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/phylatrimt.csv", row.names=1)
+#View(phylatrim)
+
+#Create an "other" category for the phyla not retained
+filtered_proportions <- colSums(major_taxa_proportions_tab) - 
+  colSums(phylatrim)
+phylatrim <- rbind(phylatrim, "Other"=filtered_proportions)
+phylatrim
+
+#Add taxa names as a column
+phylatrim$Major_Taxa <- row.names(phylatrim)
+#transform into long format
+phylalong <- gather(phylatrim, Sample, Proportion, -Major_Taxa)
+phylalong$Sample <- gsub("X","",phylalong$Sample)
+#add metadata
+#metadatap <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/metadata_punc.csv", row.names=1, stringsAsFactors=TRUE)
+#View(metadata_punc)
+#names(metadatap)
+```
+
+```{r}
+## [1] "substrate" "WetDry"
+phylamet<-data.frame("Sample"=row.names(samdftest),
+                     "Substrate"=samdftest$substrate,
+                     "FlowState"=samdftest$flow_state,
+                     stringsAsFactors=T)
+#merge metadata with major taxa data
+phylalong <- merge(phylalong, phylamet)
+#Summarize by depth and hydration
+phyla_summary <- 
+  phylalong %>% # the names of the new data frame and the data frame to be summarised
+  group_by(Substrate, FlowState, Major_Taxa) %>%   # the grouping variable
+  summarise(mean_prop = mean(Proportion))  # calculates the mean of each group
+## `summarise()` has grouped output by 'Depth', 'Hydration'. You can override using the `.groups` argument.
+phyla_summary
+
+phyla_summary$Substrate <- factor(phyla_summary$Substrate,
+                                 levels=c("B","L","S")) #reorder variables
+phyla_summary$FlowState <- factor(phyla_summary$FlowState, levels= c("flowing","dry")) #reorder variables
+phyla_summary$Major_Taxa <- factor(phyla_summary$Major_Taxa, levels= rev(c("p__Ascomycota",     
+"p__Basidiomycota",                  
+"p__Blastocladiomycota",              
+"p__Mortierellomycota",              
+"p__Kickxellomycota",                
+"p__Rozellomycota",                  
+"p__Aphelidiomycota",                
+"p__Basidiobolomycota",              
+"p__Chytridiomycota",
+"p__Neocallimastigomycota",
+"p__Ochrophyta",             
+"p__Oomycota",   
+"p__Chlorophyta",                    
+"p__Dinophyta",                      
+"p__Stramenopila_phy_Incertae_sedis",
+"Other")))
+#color palette
+
+
+sublab<- c("Epilithic biofilms", "Leaf litter", "Benthic sediment")
+names(sublab)<- c("B","L","S")
+
+pal12 <- rev(cols25(n=16)) #set n= to the number of taxa you are plotting
+#make stacked bar plot
+phylum_bar <- ggplot(phyla_summary, aes(x = FlowState, y = mean_prop, fill = Major_Taxa))+
+  geom_bar(stat = "identity", col=I("black")) +
+  scale_fill_manual(values=pal12)+
+  guides(fill=guide_legend(ncol=1))+
+  facet_wrap(~Substrate, labeller = labeller(Substrate=sublab), nrow=1, scales="free_x") +
+  labs(x="Substrate", y="Percentage of Identified ITS Sequence Copies",
+       fill="Major Phyla", title = "Phylum relative abundance for all eukaryotes ITS1")+
+  #scale_facet_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+  theme(axis.text.x = element_text(angle=60, hjust=1), legend.position = "right")+
+  theme(text=element_text(size=18), #change font size of all text
+        axis.text=element_text(size=16), #change font size of axis text
+        axis.title=element_text(size=16), #change font size of axis titles
+        plot.title=element_text(size=16), #change font size of plot title
+        legend.text=element_text(size=16), #change font size of legend text
+        strip.text.x = element_text(size = 16),
+        legend.title=element_text(size=16)) #change font size of legend title  
+phylum_bar
+ 
+#c(180,100) *
+#  0.0394 * # convert mm to inch
+#  600 # convert to pixels
+## [1] 4255.2 2364.0
+plotout <- "Phylum Barplot_fulleuk_WetDry.tiff"
+agg_tiff(filename=plotout, width=4255, height=2364, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+phylum_bar
+invisible(dev.off())
+```
+So that's that.
+
+Spiec-Easi and Indicators?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+## [1] "substrate" "WATERSHED"
+phylamet<-data.frame("Sample"=row.names(samdftest),
+                     "Substrate"=samdftest$substrate,
+                     "Watershed"=samdftest$Watershed,
+                     stringsAsFactors=T)
+#merge metadata with major taxa data
+phylalong <- merge(phylalong, phylamet)
+#Summarize by depth and hydration
+phyla_summary <- 
+  phylalong %>% # the names of the new data frame and the data frame to be summarised
+  group_by(Substrate, Watershed, Major_Taxa) %>%   # the grouping variable
+  summarise(mean_prop = mean(Proportion))  # calculates the mean of each group
+## `summarise()` has grouped output by 'Depth', 'Hydration'. You can override using the `.groups` argument.
+phyla_summary
+
+phyla_summary$Substrate <- factor(phyla_summary$Substrate,
+                                 levels=c("L","S", "B", "W")) #reorder variables
+phyla_summary$Watershed <- factor(phyla_summary$Watershed) #reorder variables
+phyla_summary$Major_Taxa <- factor(phyla_summary$Major_Taxa, levels= rev(c("p__Basidiomycota","p__Mortierellomycota","p__Blastocladiomycota","p__Aphelidiomycota","p__Kickxellomycota","p__Rozellomycota","Unclassified_Phylum","c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes", "c__Lecanoromycetes", "Unclassified_Ascomycetes", "Other")))
+#color palette
+
+
+sublab<- c("Epilithic biofilms", "Leaf litter", "Benthic sediment", "Surface water")
+names(sublab)<- c("B","L","S","W")
+
+pal12 <- rev(cols25(n=14)) #set n= to the number of taxa you are plotting
+#make stacked bar plot
+phylum_bar <- ggplot(phyla_summary, aes(x = Watershed, y = mean_prop, fill = Major_Taxa))+
+  geom_bar(stat = "identity", col=I("black")) +
+  scale_fill_manual(values=pal12)+
+  guides(fill=guide_legend(ncol=1))+
+  facet_wrap(~Substrate, labeller = labeller(Substrate=sublab), nrow=1, scales="free_x") +
+  labs(x="Substrate", y="Percentage of Identified ITS Sequence Copies",
+       fill="Major Phyla")+
+  #scale_facet_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+  theme(axis.text.x = element_text(angle=60, hjust=1), legend.position = "right")+
+  theme(text=element_text(size=16), #change font size of all text
+        axis.text=element_text(size=11), #change font size of axis text
+        axis.title=element_text(size=11), #change font size of axis titles
+        plot.title=element_text(size=11), #change font size of plot title
+        legend.text=element_text(size=11), #change font size of legend text
+        legend.title=element_text(size=11)) #change font size of legend title  
+phylum_bar
+ 
+#c(180,100) *
+#  0.0394 * # convert mm to inch
+#  600 # convert to pixels
+## [1] 4255.2 2364.0
+plotout <- "Phylum Barplot_WatershedbySubstrate001.tiff"
+agg_tiff(filename=plotout, width=4255, height=2364, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+phylum_bar
+invisible(dev.off())
+
+
+```
+
+
+MAJOR GENERA AND FAMILIES
+
+##give me top 10 genera of family from each sample type
+```{r}
+
+# Merges ASVs that have the same taxonomy rank (Genus)
+gp = tax_glom(pseqtest, taxrank = "Genus")
+#gp = tax_glom(pseqtest, taxrank = "Family")
+
+# Calculate relative abundance
+gp = transform_sample_counts(gp, function(x) {x/sum(x)} )
+#dummy check, rowsums = 100%
+head(rowSums(gp@otu_table))
+##  1 1 1 1 1 1
+
+# Define group/condition type
+type = levels(sample_data(gp)$substrate)[1] # Biofilm
+
+# Retrieve sample name of the defined type
+sn = sample_names(sample_data(gp)[sample_data(gp)$substrate == type,])
+
+# Calculate taxa sum of the selected samples
+top10B = head(sort(colSums(otu_table(gp)[sn,]), decreasing = TRUE), 10)
+
+top10B
+# Combine count and taxonomyTable
+top10B = cbind(as.data.frame(tax_table(gp)[names(top10B),]), Frac = top10B)
+top10B
+
+
+## leaf
+# Define group/condition type
+type = levels(sample_data(gp)$substrate)[2] # Leaf
+# Retrieve sample name of the defined type
+sn = sample_names(sample_data(gp)[sample_data(gp)$substrate == type,])
+
+# Calculate taxa sum of the selected samples
+top10L = head(sort(colSums(otu_table(gp)[sn,]), decreasing = TRUE), 10)
+
+top10L
+# Combine count and taxonomyTable
+top10L = cbind(as.data.frame(tax_table(gp)[names(top10L),]), Frac = top10L)
+top10L
+
+## sediment
+# Define group/condition type
+type = levels(sample_data(gp)$substrate)[3] # Leaf
+# Retrieve sample name of the defined type
+sn = sample_names(sample_data(gp)[sample_data(gp)$substrate == type,])
+
+# Calculate taxa sum of the selected samples
+top10S = head(sort(colSums(otu_table(gp)[sn,]), decreasing = TRUE), 10)
+
+top10S
+# Combine count and taxonomyTable
+top10S = cbind(as.data.frame(tax_table(gp)[names(top10S),]), Frac = top10S)
+top10S
+
+
+
+```
+
+```{r}
+top10L$Type = type
+# Plot
+top_leaf_bar<- ggplot(top10L, aes(Type,  Frac, fill = Genus)) + 
+  geom_col(color = "black", size = 1) +
+        #scale_y_continuous(breaks = seq(0, 1, 0.1)) 
+  ylab("Average relative abundance")
+top_leaf_bar
+
+```
+
+
+
+
+##give me top 10 families from each substrate X wetdry and make a bar plot
+```{r}
+
+# Merges ASVs that have the same taxonomy rank (Genus)
+gp = tax_glom(pseqtest, taxrank = "Genus")
+
+# Calculate relative abundance
+rb = transform_sample_counts(gp, function(x) {x/sum(x)} )
+
+# Define group/condition type
+type = levels(sample_data(rb)$substrate)[1] # Biofilm
+sample_data(rb)$WetDry<- as.factor(sample_data(rb)$WetDry)
+
+dryf <- levels(sample_data(rb)$WetDry)[1] # dry
+wetf <- levels(sample_data(rb)$WetDry)[2] # dry
+
+# Retrieve sample name of the defined type
+sn = sample_names(sample_data(gp)[sample_data(gp)$substrate == type & sample_data(gp)$substrate == dryf,])
+
+# Calculate taxa sum of the selected samples
+top10B = head(sort(colSums(otu_table(gp)[sn,]), decreasing = TRUE), 10)
+
+top10B
+# Combine count and taxonomyTable
+top10B = cbind(as.data.frame(tax_table(gp)[names(top10B),]), Count = top10B)
+top10B
+
+
+## leaf
+# Define group/condition type
+type = levels(sample_data(gp)$substrate)[2] # Leaf
+# Retrieve sample name of the defined type
+sn = sample_names(sample_data(gp)[sample_data(gp)$substrate == type,])
+
+# Calculate taxa sum of the selected samples
+top10L = head(sort(colSums(otu_table(gp)[sn,]), decreasing = TRUE), 10)
+
+top10L
+# Combine count and taxonomyTable
+top10L = cbind(as.data.frame(tax_table(gp)[names(top10L),]), Count = top10L)
+top10L
+
+## sediment
+# Define group/condition type
+type = levels(sample_data(gp)$substrate)[3] # Leaf
+# Retrieve sample name of the defined type
+sn = sample_names(sample_data(gp)[sample_data(gp)$substrate == type,])
+
+# Calculate taxa sum of the selected samples
+top10S = head(sort(colSums(otu_table(gp)[sn,]), decreasing = TRUE), 10)
+
+top10S
+# Combine count and taxonomyTable
+top10S = cbind(as.data.frame(tax_table(gp)[names(top10S),]), Count = top10S)
+top10S
+
+
+
+```
+
+
+FAMILY RICHNESS
+```{r}
+
+# Merges ASVs that have the same taxonomy rank (Genus)
+gp = tax_glom(pseqtest, taxrank = "Family")
+
+plot_richness(gp, x="stic_wet_prob", measures=c("Observed", "Shannon"))+
+  facet_grid(~ substrate)
+
+family_richness <-  estimate_richness(gp, split=TRUE, measures="Observed") %>% cbind(estimate_richness(gp, split=TRUE, measures="Chao1")) %>% cbind(estimate_richness(gp, split=TRUE, measures="Shannon")) %>% cbind(estimate_richness(gp, split=TRUE, measures="InvSimpson"))
+family_richness <- cbind(samdftest, family_richness)
+
+man3 <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ stic_wet_prob*substrate, data=family_richness)
+hist(man3$residuals)
+plot(man3$residuals ~ man3$fitted.values)
+summary.aov(man3)
+
+man3 <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ Discharge..L.s.*substrate, data=family_richness)
+hist(man3$residuals)
+plot(man3$residuals ~ man3$fitted.values)
+summary.aov(man3)
+
+shalpha_TWI <- ggplot(alpha, aes(x=TWI, y=Shannon)) +
+  facet_grid(. ~ substrate)+
+  geom_point(aes(colour=WetDry, shape=Watershed_LTER)) +
+  geom_smooth(method = 'lm')+
+  ylab("Shannon Diversity of fungal ASVs")
+shalpha_TWI
+
+lm_alpha_twi_B <- lm(alpha$Observed ~ alpha$lnContribWSha, data = alpha, subset = alpha$substrate=='B')
+summary(lm_alpha_twi_B)
+lm_alpha_twi_L <- lm(alpha$Observed ~ alpha$lnContribWSha, data = alpha, subset = alpha$substrate=='L')
+summary(lm_alpha_twi_L)
+lm_alpha_twi_S <- lm(alpha$Observed ~ alpha$lnContribWSha, data = alpha, subset = alpha$substrate=='S')
+summary(lm_alpha_twi_S)
+
+alpha_L<- alpha[alpha$substrate=='L',]
+alpha_S<- alpha[alpha$substrate=='S',]
+alpha_B<- alpha[alpha$substrate=='B',]
+
+cor_areaL<-cor.test(alpha_L$Observed, alpha_L$lnContribWSha, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Observed, alpha_B$lnContribWSha, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Observed, alpha_S$lnContribWSha, method = "pearson")
+cor_areaS
+
+
+
+```
+
+
+Basidiomycete yeasts in sediment?
+
+```{r}
+# TAXONOMIC COMPOSITION:
+
+#setwd("/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs")
+#make taxonomy object by phylum
+class_counts_tab <- otu_table(tax_glom(pseqtest, taxrank = "Class"), taxa_are_rows = FALSE)
+class_counts_tab <- t(class_counts_tab)
+#make vector of class names to set as row names
+class_tax_vec <- as.vector(tax_table(tax_glom(pseqtest, taxrank="Class"))[,3]) 
+rownames(class_counts_tab) <- as.vector(class_tax_vec)
+class_counts_tab
+write.csv(class_counts_tab, 'class_counts_rar.csv')
+          
+```
+
+```{r}
+asv_counts <- pseqtest@otu_table
+#determine the number of unclassified seqs at the class level
+unclassified_tax_counts <- colSums(t(asv_counts)) - colSums(class_counts_tab)
+#Add a row of "unclassified" to the class count table
+class_and_unidentified_counts_tab <- rbind(class_counts_tab, "Unclassified_class"=unclassified_tax_counts)
+
+#Merge metadata, phylum, and family abundances
+#phy_and_fam <- merge(t(major_taxa_counts_tab), t(family_and_unidentified_counts_tab),
+#                  by="row.names", all=TRUE)
+class_merge <- merge(t(class_and_unidentified_counts_tab), samdftest,
+                  by="row.names", all=TRUE)
+rownames(class_merge) <- class_merge[,1]
+class_merge <- class_merge[,-1]
+
+write.csv(class_merge, "1216R_05062023_classmerge.csv")
+```
+
+
+```{r}
+
+#MANOVA
+cmanphy <- manova(cbind( c__Dothideomycetes,c__Agaricomycetes, c__Leotiomycetes,c__Sordariomycetes,c__Eurotiomycetes,c__Pezizomycetes,c__Lecanoromycetes, c__Tremellomycetes) ~ WetDry*substrate, data=class_merge)
+hist(cmanphy$residuals)
+plot(cmanphy$residuals ~ cmanphy$fitted.values)
+summary.aov(cmanphy)
+
+cmanphy <- manova(cbind( c__Dothideomycetes,c__Agaricomycetes, c__Leotiomycetes,c__Sordariomycetes,c__Eurotiomycetes,c__Pezizomycetes,c__Lecanoromycetes, c__Tremellomycetes) ~ stic_wet_prob*substrate, data=class_merge)
+hist(cmanphy$residuals)
+plot(cmanphy$residuals ~ cmanphy$fitted.values)
+summary.aov(cmanphy)
+
+
+Trem_wetdry <- ggplot(class_merge, aes(x=stic_wet_prob, y=c__Tremellomycetes)) +
+  facet_grid(. ~ substrate)+
+  #geom_boxplot()+
+  geom_point(aes(shape=WetDry)) +
+  geom_smooth(method = 'lm')+
+  ylab("Tremellomycete relative abundance")
+Trem_wetdry
+
+
+
+```
+
+
+
+
+
+
+## Indicator speciess
+use non rar for indic spp..
+
+```{r}
+#setwd('/Users/chunk/Documents/DADA2/1216R/1216R_April')
+
+metadata_full <- read.csv("3mega_meta_kzsyn_April_19_2023.csv", row.names=1)
+metadata_full$substrate <- as.factor(metadata_full$substrate)
+
+nrasvtab <- otu_table(cured_asvs, taxa_are_rows = FALSE)
+taxtab <- tax_table(taxtab)
+metadata <- sample_data(metadata_full)
+#combine into phyloseq object
+pseqtestnr <- phyloseq(nrasvtab, taxtab, metadata)
+#extract easy-to-use sample data
+samdftestnr <- data.frame(sample_data(pseqtestnr))
+
+```
+
+Indicators!!
+```{r}
+library(vegan)
+library(MASS)
+library(labdsv)
+library(cluster)
+library(indicspecies)
+```
+
+```{r}
+# Perform indicator species analysis based on SUBSTRATE
+ind_species<-multipatt(pseqtest@otu_table, pseqtest@sam_data$substrate,max.order=4,duleg=FALSE,func="IndVal.g",control=how(nperm=5000))
+ind_species
+summary(ind_species)
+```
+
+DIVIDE BY SUBSTRATE
+
+```{r}
+meta_B<- metadata_full[metadata_full$substrate=='B',]
+metadata_B <- sample_data(meta_B)
+#combine into phyloseq object
+pseqtest_Bnr <- phyloseq(nrasvtab, taxtab, metadata_B)
+
+meta_L<- metadata_full[metadata_full$substrate=='L',]
+metadata_L <- sample_data(meta_L)
+#combine into phyloseq object
+pseqtest_Lnr <- phyloseq(nrasvtab, taxtab, metadata_L)
+
+meta_S<- metadata_full[metadata_full$substrate=='S',]
+metadata_S <- sample_data(meta_S)
+#combine into phyloseq object
+pseqtest_Snr <- phyloseq(nrasvtab, taxtab, metadata_S)
+
+
+```
+
+
+Epilithon
+```{r}
+# Perform indicator species analysis based pre-/post- bleaching groupings
+ind_species<-multipatt(pseqtest_B@otu_table, pseqtest_B@sam_data$WetDry,max.order=2,duleg=FALSE,func="IndVal.g",control=how(nperm=5000))
+#ind_species
+summary(ind_species)
+
+ind_species<-multipatt(pseqtest_Bnr@otu_table, pseqtest_Bnr@sam_data$WetDry,max.order=2,duleg=FALSE,func="r.g",control=how(nperm=5000))
+#ind_species
+summary(ind_species)
+```
+
+Multilevel pattern analysis 
+ ---------------------------
+
+ Association function: IndVal.g
+ Significance level (alpha): 0.05
+
+ Total number of species: 8184
+ Selected number of species: 58 
+ Number of species associated to 1 group: 58 
+
+ List of species associated to each combination: 
+
+ Group DRY  #sps.  48 
+          stat p.value    
+ASV_45   0.841  0.0018 ** Fungi	Ascomycota	Leotiomycetes	Helotiales	Helotiaceae	Tetracladium	NA
+###ASV_73   0.840  0.0056 ** Fungi	Ascomycota	Eurotiomycetes	Verrucariales	Verrucariaceae	Verrucaria	tallbackaensis
+ASV_81   0.816  0.0172 *  Fungi	Ascomycota	Dothideomycetes	Pleosporales	Phaeosphaeriaceae	NA
+ASV_1605 0.769  0.0010 *** Fungi	Ascomycota	Dothideomycetes	Mycosphaerellales	Mycosphaerellaceae	NA
+ASV_220  0.766  0.0290 *  Fungi	Basidiomycota	Tremellomycetes	Tremellales	Rhynchogastremataceae	Papiliotrema	laurentii
+ASV_570  0.751  0.0230 *  Fungi	Ascomycota	Dothideomycetes	Pleosporales	Phaeosphaeriaceae	NA
+ASV_267  0.749  0.0478 *  Fungi	Basidiomycota	Basidiomycota_cls_Incertae_sedis
+ASV_938  0.740  0.0050 ** Fungi	Ascomycota	Eurotiomycetes	Eurotiales	Aspergillaceae	Penicillium	guanacastense
+ASV_1187 0.736  0.0196 *  Fungi	Ascomycota	Dothideomycetes	Pleosporales	Sporormiaceae	Sporormiella	intermedia
+ASV_128  0.723  0.0120 *  
+ASV_439  0.721  0.0106 *  
+ASV_363  0.719  0.0164 *  
+ASV_496  0.711  0.0052 ** 
+ASV_470  0.709  0.0250 *  
+ASV_137  0.706  0.0236 *  
+ASV_298  0.700  0.0454 *  
+ASV_644  0.688  0.0296 *  
+ASV_1299 0.632  0.0110 *  
+ASV_1583 0.632  0.0082 ** 
+ASV_2074 0.632  0.0098 ** 
+ASV_2091 0.632  0.0082 ** 
+ASV_2902 0.632  0.0100 ** 
+ASV_3416 0.632  0.0116 *  
+ASV_3922 0.632  0.0082 ** 
+ASV_210  0.632  0.0198 *  
+ASV_2769 0.628  0.0170 *  
+ASV_2880 0.627  0.0096 ** 
+ASV_562  0.626  0.0162 *  
+ASV_576  0.624  0.0108 *  
+ASV_451  0.623  0.0094 ** 
+ASV_2916 0.621  0.0082 ** 
+ASV_1691 0.620  0.0162 *  
+ASV_2664 0.620  0.0090 ** 
+ASV_1301 0.619  0.0256 *  
+ASV_479  0.619  0.0232 *  
+ASV_1096 0.618  0.0366 *  
+ASV_1775 0.614  0.0190 *  
+ASV_3907 0.614  0.0276 *  
+ASV_4459 0.614  0.0104 *  
+ASV_677  0.609  0.0368 *  
+ASV_621  0.608  0.0300 *  
+ASV_975  0.606  0.0180 *  
+ASV_1500 0.602  0.0498 *  
+ASV_669  0.600  0.0376 *  
+ASV_307  0.590  0.0454 *  
+ASV_990  0.580  0.0290 *  
+ASV_1011 0.580  0.0490 *  
+ASV_1600 0.539  0.0500 *  
+
+ Group WET  #sps.  10 
+         stat p.value    
+ASV_55  0.982  0.0002 *** Fungi	Basidiomycota	Agaricomycetes	Agaricales	Inocybaceae	Pseudosperma	aureocitrinum
+###ASV_20  0.941  0.0008 *** Fungi	Ascomycota	Leotiomycetes	Helotiales	Helotiaceae	Tetracladium	marchalianum AHF
+ASV_60  0.925  0.0012 ** Fungi	Ascomycota	Dothideomycetes	Pleosporales	Phaeosphaeriaceae	Neoophiobolus	chromolaenae
+ASV_35  0.894  0.0054 ** Fungi	Ascomycota	Leotiomycetes	Helotiales	Helotiales_fam_Incertae_sedis	Mycoarthris	NA
+ASV_123 0.852  0.0450 *  Fungi	NA
+ASV_110 0.851  0.0238 *  Fungi	Basidiomycota	Agaricomycetes	Thelephorales	Thelephoraceae	NA
+ASV_167 0.837  0.0234 *  Stramenopila	Ochrophyta	Eustigmatophyceae	Eustigmatales	Eustigmataceae	Eustigmatos	NA
+###ASV_226 0.837  0.0234 *  Fungi	Ascomycota	Eurotiomycetes	Verrucariales	Verrucariaceae	Verrucaria	nigrescens
+ASV_139 0.811  0.0454 *  Fungi	Basidiomycota	Cystobasidiomycetes	Cystobasidiomycetes_ord_Incertae_sedis	NA
+ASV_232 0.791  0.0456 *  Fungi	Basidiomycota	Tremellomycetes	Tremellales	Bulleribasidiaceae	Dioszegia	zsoltii
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1 
+
+```{r}
+
+
+# Perform indicator species analysis based pre-/post- bleaching groupings
+ind_species<-multipatt(pseqtest_L@otu_table, pseqtest_L@sam_data$WetDry,max.order=2,duleg=FALSE,func="IndVal.g",control=how(nperm=5000))
+ind_species
+summary(ind_species)
+```
+
+Multilevel pattern analysis
+ ---------------------------
+
+ Association function: IndVal.g
+ Significance level (alpha): 0.05
+
+ Total number of species: 4224
+ Selected number of species: 13 
+ Number of species associated to 1 group: 13 
+
+ List of species associated to each combination: 
+
+ Group DRY  #sps.  12 
+          stat p.value   
+ASV_447  0.806  0.0038 **
+ASV_144  0.753  0.0042 ** g__Oliveonia
+ASV_202  0.707  0.0402 * 
+ASV_247  0.706  0.0438 * 
+ASV_105  0.671  0.0126 * 
+ASV_59   0.643  0.0190 * 
+ASV_92   0.640  0.0438 * 
+ASV_209  0.582  0.0468 * 
+ASV_813  0.577  0.0198 * 
+ASV_865  0.577  0.0212 * 
+ASV_2422 0.577  0.0198 * 
+ASV_229  0.548  0.0496 * 
+
+ Group WET  #sps.  1 
+        stat p.value   
+ASV_15 0.917  0.0038 **
+k__Fungi	p__Ascomycota	c__Dothideomycetes	o__Pleosporales	f__Phaeosphaeriaceae	g__Paraphoma	s__radicina
+^^^ plant pathogen
+
+
+```{r}
+# Perform indicator species analysis based pre-/post- bleaching groupings
+ind_species<-multipatt(pseqtest_S@otu_table, pseqtest_S@sam_data$WetDry,max.order=2,duleg=FALSE,func="IndVal.g",control=how(nperm=5000))
+ind_species
+summary(ind_species)
+```
+
+Multilevel pattern analysis
+ ---------------------------
+
+ Association function: IndVal.g
+ Significance level (alpha): 0.05
+
+ Total number of species: 4224
+ Selected number of species: 31 
+ Number of species associated to 1 group: 31 
+
+ List of species associated to each combination: 
+
+ Group DRY  #sps.  31 
+          stat p.value    
+ASV_379  0.916  0.0004 ***
+p__Basidiomycota	c__Agaricomycetes	o__Agaricales	f__Lycoperdaceae g__Lycoperdon	s__pratense
+
+ASV_282  0.911  0.0012 ** 
+p__Basidiomycota	c__Agaricomycetes	o__Agaricales	f__Lycoperdaceae	g__Calvatia	s__cyathiformis
+
+ASV_422  0.870  0.0004 ***
+k__Fungi	p__Ascomycota	c__Sordariomycetes	o__Hypocreales	f__Nectriaceae	g__Thelonectria	s__olida
+
+ASV_120  0.856  0.0096 ** 
+ASV_120	k__Fungi	p__Ascomycota	c__Dothideomycetes	o__Pleosporales	f__Phaeosphaeriaceae	g__Paraphoma	s__chrysanthemicola
+
+ASV_449  0.812  0.0004 ***
+k__Fungi	p__Basidiomycota	c__Agaricomycetes	o__Agaricales	f__Lycoperdaceae	g__Arachnion	s__album
+
+ASV_536  0.770  0.0040 ** 
+!!!	g__Ganoderma	s__applanatum
+
+ASV_737  0.756  0.0052 ** 
+NANANA
+
+ASV_435  0.717  0.0314 *  
+p__Basidiomycota	c__Agaricomycetes	o__Agaricales	f__Lycoperdaceae	g__Disciseda	NA
+
+ASV_406  0.709  0.0200 *  
+g__Penicillium	s__herquei
+
+ASV_818  0.707  0.0034 ** 
+NANANA
+
+ASV_1030 0.707  0.0022 ** 
+ASV_2313 0.707  0.0024 ** 
+ASV_822  0.695  0.0122 *  
+ASV_876  0.693  0.0056 ** 
+ASV_668  0.671  0.0230 *  
+ASV_329  0.661  0.0256 *  
+ASV_410  0.648  0.0380 *  
+ASV_812  0.635  0.0270 *  
+ASV_1565 0.615  0.0452 *  
+ASV_949  0.577  0.0260 *  
+ASV_1015 0.577  0.0214 *  
+ASV_1854 0.577  0.0252 *  
+ASV_2521 0.577  0.0250 *  
+ASV_2556 0.577  0.0236 *  
+ASV_2672 0.577  0.0210 *  
+ASV_2674 0.577  0.0232 *  
+ASV_3093 0.577  0.0220 *  
+ASV_803  0.570  0.0210 *  
+ASV_278  0.559  0.0300 *  
+ASV_471  0.553  0.0480 *  
+ASV_375  0.536  0.0492 *
+```{r}
+# Perform indicator species analysis based pre-/post- bleaching groupings
+ind_species<-multipatt(pseqtest_S@otu_table, pseqtest_S@sam_data$Watershed,max.order=2,duleg=FALSE,func="IndVal.g",control=how(nperm=5000))
+ind_species
+summary(ind_species)
+```
+
+Multilevel pattern analysis
+ ---------------------------
+
+ Association function: IndVal.g
+ Significance level (alpha): 0.05
+
+ Total number of species: 1494
+ Selected number of species: 39 
+ Number of species associated to 1 group: 33 
+ Number of species associated to 2 groups: 6 
+ Number of species associated to 3 groups: 0 
+ Number of species associated to 4 groups: 0 
+ Number of species associated to 5 groups: 0 
+
+ List of species associated to each combination: 
+
+ Group N1A  #sps.  1 
+         stat p.value  
+ASV_352 0.621  0.0338 * ASV_352	k__Fungi	p__Ascomycota	c__Pezizomycetes	o__Pezizales	f__Pyronemataceae	g__Geopora	NA
+
+ Group N20A  #sps.  3 
+         stat p.value   
+ASV_85  0.775  0.0036 ** ASV_85	k__Fungi	p__Rozellomycota	NA	NA	NA	NA	NA
+ASV_807 0.741  0.0092 ** ASV_807	k__Fungi	p__Basidiomycota	c__Agaricomycetes	o__Geastrales	f__Geastraceae	g__Geastrum	s__corollinum
+ASV_150 0.728  0.0288 * ASV_807	k__Fungi	p__Basidiomycota	c__Agaricomycetes	o__Geastrales	f__Geastraceae	g__Geastrum	s__corollinum 
+
+ Group TRIB  #sps.  29 
+          stat p.value   
+ASV_463  0.876  0.0032 ** ASV_463	k__Fungi	p__Ascomycota	c__Eurotiomycetes	o__Eurotiales	f__Aspergillaceae	g__Penicillium	NA
+ASV_157  0.782  0.0112 * ASV_157	k__Fungi	p__Rozellomycota	NA	NA	NA	NA	NA
+ASV_408  0.723  0.0242 * ASV_411	k__Fungi	p__Ascomycota	c__Dothideomycetes	o__Pleosporales	f__Didymosphaeriaceae	g__Paracamarosporium	s__fagi
+ASV_215  0.707  0.0498 * ASV_215	k__Fungi	p__Ascomycota	c__Pezizomycetes	o__Pezizales	f__Ascobolaceae	g__Ascobolus	NA
+ASV_366  0.707  0.0498 * ASV_366	k__Fungi	p__Ascomycota	c__Leotiomycetes	o__Helotiales	f__Rutstroemiaceae	NA	NA
+ASV_450  0.707  0.0498 * ASV_450	k__Fungi	p__Ascomycota	c__Dothideomycetes	o__Pleosporales	f__Leptosphaeriaceae	g__Plenodomus	s__lindquistii
+ASV_592  0.707  0.0498 * ASV_592	k__Fungi	p__Ascomycota	c__Leotiomycetes	o__Thelebolales	f__Thelebolaceae	g__Thelebolus	s__globosus  hhahahaha goofballs in this paper describe Thelebolus globosus as endemic to Antarctica and diverging from South American ancestor 30-40 million years ago when Antarctica split off, lololololololol I found it in Kansas lolololololololol
+ASV_663  0.707  0.0498 * ASV_663	k__Fungi	p__Basidiomycota	c__Agaricomycetes	o__Sebacinales	NA	NA	NA
+ASV_818  0.707  0.0498 * ASV_818	k__Fungi	p__Ascomycota	c__Schizosaccharomycetes	o__Schizosaccharomycetales	f__Schizosaccharomycetaceae	g__Schizosaccharomyces	s__japonicus fission yeast fission yeaast...
+ASV_999  0.707  0.0498 * 
+ASV_1223 0.707  0.0498 * 
+ASV_1270 0.707  0.0498 * 
+ASV_1304 0.707  0.0498 * 
+ASV_1419 0.707  0.0498 * 
+ASV_1638 0.707  0.0498 * 
+ASV_1699 0.707  0.0498 * 
+ASV_1993 0.707  0.0498 * 
+ASV_2170 0.707  0.0498 * 
+ASV_2379 0.707  0.0498 * 
+ASV_2510 0.707  0.0498 * 
+ASV_2623 0.707  0.0498 * 
+ASV_2765 0.707  0.0498 * 
+ASV_3007 0.707  0.0498 * 
+ASV_3008 0.707  0.0498 * 
+ASV_70   0.700  0.0438 * 
+ASV_1080 0.649  0.0264 * 
+ASV_1414 0.648  0.0438 * 
+ASV_501  0.646  0.0446 * 
+ASV_2469 0.634  0.0454 * 
+
+ Group N1A+N20A  #sps.  1 
+        stat p.value  
+ASV_69 0.791  0.0116 *
+
+ Group N1A+SFKC  #sps.  1 
+         stat p.value  
+ASV_451 0.645  0.0306 *
+
+ Group N20A+TRIB  #sps.  4 
+         stat p.value    
+ASV_77  0.836  0.0008 ***
+ASV_46  0.795  0.0200 *  
+ASV_205 0.791  0.0042 ** 
+ASV_124 0.789  0.0086 ** 
+
+
+
+
+```{r}
+# Perform indicator species analysis based pre-/post- bleaching groupings
+#ind_species<-multipatt(pseqtest@otu_table, pseqtest@sam_data$substrate,max.order=4,duleg=FALSE,func="IndVal.g",control=how(nperm=5000))
+#ind_species
+#summary(ind_species)
+# SIMPER
+sim<-simper(pseqtest@otu_table, pseqtest@sam_data$substrate)
+sim
+summary(sim)
+
+```
+
+```{r}
+indpower(pseqtest@otu_table)
+
+```
+
+```{r}
+# Perform indicator species analysis based pre-/post- bleaching groupings
+ind_species<-multipatt(pseqtest@otu_table, pseqtest@sam_data$substrate,max.order=4,duleg=FALSE,func="IndVal.g",control=how(nperm=5000))
+ind_species
+summary(ind_species, indvalcomp=TRUE)
+```
+
+
+
+
+FUNGALTRAITS
+
+Micro-Eco package for FungalTraits
+
+```{r}
+#install.packages('microeco')
+#install.packages('file2meco')
+library(microeco)
+library(file2meco)
+##install.packages("file2meco")
+microecotest<- phyloseq2meco(pseqtest)
+# When the OTU number is large, using R WGCNA package to replace "base" will be faster
+# require WGCNA package, see https://chiliubio.github.io/microeco_tutorial/intro.html#wgcna for the installation
+
+microecotest$tidy_dataset()
+# create trans_network object
+#t1 <- trans_network$new(dataset = microecotest, cal_cor = "base", taxa_level = "OTU", filter_thres = 0.000001, cor_method = "spearman")
+# create correlation network 
+#t1$cal_network(p_thres = 0.05, COR_cut = 0.6)
+# add modules
+#t1$cal_module()
+# calculate node topological properties
+#t1$cal_node_type()
+#node_type_table <- t1$res_node_type
+# save network
+# open the gexf file using Gephi(https://gephi.org/)
+# require rgexf package
+#library(rgexf)
+#t1$save_network(filepath = "network.gexf")
+
+
+# create trans_func object
+t2 <- trans_func$new(microecotest)
+# identify species traits, automatically select database for prokaryotes or fungi
+# fungi_database = "FungalTraits" for the FungalTraits database
+t2$cal_spe_func(fungi_database = "FungalTraits")
+
+write.csv(t2$res_spe_func,"FungalTraits_ASV_tab_microeco.csv")
+
+# calculate abundance-unweighted functional redundancy of each trait for each network module
+t2$cal_spe_func_perc(#use_community = TRUE
+  )
+relabun_func<-t2$res_spe_func_perc
+t2$res_spe_func_perc
+write.csv(relabun_func, "functional_group_percent_abundance.csv")
+# plot the functional redundancy of network modules
+#plot<- t2$plot_spe_func_perc(select_samples = paste0("M", 1:10))
+#microecotest$sample_table$substrate <- as.factor(microecotest$sample_table$substrate)
+plot<- t2$plot_spe_func_perc(select_samples = microecotest$sample_table$substrate)
+
+
+# then we try to correlate the res_spe_func_perc of communities to environmental variables
+addata <- microecotest$sample_table[,3:10] %>% cbind(microecotest$sample_table[,14:23])%>% cbind(microecotest$sample_table[,31]) %>% cbind(microecotest$sample_table[,42:56])
+t3 <- trans_env$new(dataset = microecotest, add_data = addata)
+t3$cal_cor(add_abund_table = t2$res_spe_func_perc, cor_method = "spearman")
+t3$plot_cor(pheatmap = FALSE)
+plot001<-t3$plot_cor(pheatmap = FALSE)
+
+
+
+```
+#seperate by substrate
+###Leaf
+```{r}
+#meta_L <- metatest_full[metatest_full$substrate=='L',]
+#metatest_L <- sample_data(meta_L)
+#combine into phyloseq object
+#pseqtest_L <- phyloseq(asvtest, taxtest, metatest_L)
+#extract easy-to-use sample data
+#samdftest_L <- data.frame(sample_data(pseqtest_L))
+Lmicroecotest<- phyloseq2meco(pseqtest_L)
+# create trans_func object
+
+Lt2 <- trans_func$new(Lmicroecotest)
+# identify species traits, automatically select database for prokaryotes or fungi
+# fungi_database = "FungalTraits" for the FungalTraits database
+Lt2$cal_spe_func(fungi_database = "FungalTraits")
+# calculate abundance-unweighted functional redundancy of each trait for each network module
+Lt2$cal_spe_func_perc(#use_community = TRUE)
+)
+#relabun_func<-Lt2$res_spe_func_perc
+Lt2$res_spe_func_perc
+#write.csv(relabun_func, "functional_group_percent_abundance.csv")
+# plot the functional redundancy of network modules
+#plot<- t2$plot_spe_func_perc(select_samples = paste0("M", 1:10))
+#Lmicroecotest$sample_table$substrate <- as.factor(microecotest$sample_table$substrate)
+#Lplot<- t2$plot_spe_func_perc(select_samples = microecotest$sample_table$substrate)
+
+
+# then we try to correlate the res_spe_func_perc of communities to environmental variables
+Laddata <- Lmicroecotest$sample_table[,4:10] %>% cbind(Lmicroecotest$sample_table[,14:23]) %>% cbind(Lmicroecotest$sample_table[,31]) %>% cbind(Lmicroecotest$sample_table[,42:56])
+
+#<- microecotest$sample_table[,3:10] %>% cbind(microecotest$sample_table[,14:23])%>% cbind(microecotest$sample_table[,31]) %>% cbind(microecotest$sample_table[,42:56])
+Lt3 <- trans_env$new(dataset = Lmicroecotest, add_data = Laddata)
+Lt3$cal_cor(add_abund_table = Lt2$res_spe_func_perc, cor_method = "spearman")
+Lt3$plot_cor(pheatmap = FALSE)
+Lplot001<-Lt3$plot_cor(pheatmap = FALSE)
+
+```
+
+#SEDIMENT
+```{r}
+#meta_S <- metatest_full[metatest_full$substrate=='S',]
+#metatest_S <- sample_data(meta_S)
+#combine into phyloseq object
+#pseqtest_S <- phyloseq(asvtest, taxtest, metatest_S)
+#extract easy-to-use sample data
+#samdftest_L <- data.frame(sample_data(pseqtest_L))
+Smicroecotest<- phyloseq2meco(pseqtest_S)
+# create trans_func object
+
+St2 <- trans_func$new(Smicroecotest)
+# identify species traits, automatically select database for prokaryotes or fungi
+# fungi_database = "FungalTraits" for the FungalTraits database
+St2$cal_spe_func(fungi_database = "FungalTraits")
+# calculate abundance-unweighted functional redundancy of each trait for each network module
+St2$cal_spe_func_perc(#use_community = TRUE)
+)
+#relabun_func<-Lt2$res_spe_func_perc
+St2$res_spe_func_perc
+#write.csv(relabun_func, "functional_group_percent_abundance.csv")
+# plot the functional redundancy of network modules
+#plot<- t2$plot_spe_func_perc(select_samples = paste0("M", 1:10))
+#Lmicroecotest$sample_table$substrate <- as.factor(microecotest$sample_table$substrate)
+#Lplot<- t2$plot_spe_func_perc(select_samples = microecotest$sample_table$substrate)
+
+
+# then we try to correlate the res_spe_func_perc of communities to environmental variables
+Saddata <- Smicroecotest$sample_table[,4:10] %>% cbind(Smicroecotest$sample_table[,14:23]) %>% cbind(Smicroecotest$sample_table[,31]) %>% cbind(Smicroecotest$sample_table[,42:56])
+St3 <- trans_env$new(dataset = Smicroecotest, add_data = Saddata)
+St3$cal_cor(add_abund_table = St2$res_spe_func_perc, cor_method = "spearman")
+St3$plot_cor(pheatmap = FALSE)
+Splot001<-St3$plot_cor(pheatmap = FALSE)
+
+```
+
+##BIOFILM
+```{r}
+#meta_B<- metatest_full[metatest_full$substrate=='B',]
+#metatest_B <- sample_data(meta_B)
+#combine into phyloseq object
+#pseqtest_B <- phyloseq(asvtest, taxtest, metatest_B)
+#extract easy-to-use sample data
+#samdftest_L <- data.frame(sample_data(pseqtest_L))
+Bmicroecotest<- phyloseq2meco(pseqtest_B)
+# create trans_func object
+
+Bt2 <- trans_func$new(Bmicroecotest)
+# identify species traits, automatically select database for prokaryotes or fungi
+# fungi_database = "FungalTraits" for the FungalTraits database
+Bt2$cal_spe_func(fungi_database = "FungalTraits")
+# calculate abundance-unweighted functional redundancy of each trait for each network module
+Bt2$cal_spe_func_perc(#use_community = TRUE
+  )
+#relabun_func<-Lt2$res_spe_func_perc
+Bt2$res_spe_func_perc
+#write.csv(relabun_func, "functional_group_percent_abundance.csv")
+# plot the functional redundancy of network modules
+#plot<- t2$plot_spe_func_perc(select_samples = paste0("M", 1:10))
+#Lmicroecotest$sample_table$substrate <- as.factor(microecotest$sample_table$substrate)
+#Lplot<- t2$plot_spe_func_perc(select_samples = microecotest$sample_table$substrate)
+
+
+# then we try to correlate the res_spe_func_perc of communities to environmental variables
+Baddata <- Bmicroecotest$sample_table[,4:10] %>% cbind(Bmicroecotest$sample_table[,14:23]) %>% cbind(Bmicroecotest$sample_table[,31]) %>% cbind(Bmicroecotest$sample_table[,42:56])
+Bt3 <- trans_env$new(dataset = Bmicroecotest, add_data = Baddata)
+Bt3$cal_cor(add_abund_table = Bt2$res_spe_func_perc, cor_method = "spearman")
+Bt3$plot_cor(pheatmap = FALSE)
+Bplot001<-Bt3$plot_cor(pheatmap = FALSE)
+
+```
+
+functional analysis
+```{r}
+#func_relabun <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs/func_relabun.csv", row.names=1)
+#View(func_relabun)
+#relabun_func
+perc_func_env<- merge(samdftest,relabun_func,by="row.names")
+row.names(perc_func_env) <- perc_func_env$Row.names
+```
+
+
+
+```{r}
+#Create an "other" category for the phyla not retained
+#filtered_proportions <- colSums(perc_func_env) - 
+func_prop<- perc_func_env[100:121]/rowSums(perc_func_env[100:121])
+rowSums(func_prop)
+#func_prop <- func_prop
+#Add taxa names as a column
+func_prop$functional_groups <- row.names(func_prop)
+
+#transform into long format
+func_proplong <- gather(func_prop, Sample, Proportion, -functional_groups)
+colnames(func_proplong)<- c("Sample", "functional_groups", "Proportion")
+## [1] "substrate" "WetDry"
+funcmet<-data.frame("Sample"=row.names(perc_func_env),
+                     "Substrate"=perc_func_env$substrate,
+                     "WetDry"=perc_func_env$WetDry,
+                     stringsAsFactors=T)
+row.names(funcmet)<- funcmet$Sample
+#merge metadata with major taxa data
+func_proplong <- merge(func_proplong, funcmet, by="Sample")
+#Summarize by depth and hydration
+phyla_summary <- 
+  func_proplong %>% # the names of the new data frame and the data frame to be summarised
+  group_by(Substrate, WetDry, functional_groups) %>%   # the grouping variable
+  summarise(mean_prop = mean(Proportion))  # calculates the mean of each group
+## `summarise()` has grouped output by 'Depth', 'Hydration'. You can override using the `.groups` argument.
+phyla_summary
+
+phyla_summary$Substrate <- factor(phyla_summary$Substrate,
+                                 levels=c( "B", "L","S")) #reorder variables
+phyla_summary$WetDry <- factor(phyla_summary$WetDry, levels= c("WET","DRY")) #reorder variables
+phyla_summary$functional_groups <- factor(phyla_summary$functional_groups)
+#, levels= rev(c("p__Basidiomycota","p__Mortierellomycota","p__Kickxellomycota","p__Rozellomycota","Unclassified_Phylum","c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Lecanoromycetes", "Unclassified_Ascomycetes","Other")))
+#color palette
+
+
+sublab<- c("Epilithic biofilms", "Leaf litter", "Benthic sediment")
+names(sublab)<- c("B","L","S")
+
+pal12 <- rev(cols25(n=22)) #set n= to the number of taxa you are plotting
+#make stacked bar plot
+phylum_bar <- ggplot(phyla_summary, aes(x = WetDry, y = mean_prop, fill = functional_groups))+
+  geom_bar(stat = "identity", col=I("black")) +
+  scale_fill_manual(values=pal12)+
+  guides(fill=guide_legend(ncol=1))+
+  facet_wrap(~Substrate, labeller = labeller(Substrate=sublab), nrow=1, scales="free_x") +
+  labs(x="Substrate", y="Percentage of Identified ITS Sequence Copies",
+       fill="functional_groups")+
+  #scale_facet_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+  theme(axis.text.x = element_text(angle=60, hjust=1), legend.position = "right")+
+  theme(text=element_text(size=16), #change font size of all text
+        axis.text=element_text(size=11), #change font size of axis text
+        axis.title=element_text(size=11), #change font size of axis titles
+        plot.title=element_text(size=11), #change font size of plot title
+        legend.text=element_text(size=11), #change font size of legend text
+        legend.title=element_text(size=11)) #change font size of legend title  
+phylum_bar
+ 
+#c(180,100) *
+#  0.0394 * # convert mm to inch
+#  600 # convert to pixels
+## [1] 4255.2 2364.0
+plotout <- "Functional Barplot_WetDry002.tiff"
+agg_tiff(filename=plotout, width=4255, height=2364, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+phylum_bar
+invisible(dev.off())
+```
+Plot aquatic!!!
+```{r}
+#Create an "other" category for the phyla not retained
+#filtered_proportions <- colSums(perc_func_env) - 
+func_prop<- perc_func_env[174:177]/rowSums(perc_func_env[174:177])
+rowSums(func_prop)
+#func_prop <- func_prop
+#Add taxa names as a column
+func_prop$functional_groups <- row.names(func_prop)
+
+#transform into long format
+func_proplong <- gather(func_prop, Sample, Proportion, -functional_groups)
+colnames(func_proplong)<- c("Sample", "functional_groups", "Proportion")
+## [1] "substrate" "WetDry"
+funcmet<-data.frame("Sample"=row.names(perc_func_env),
+                     "Substrate"=perc_func_env$substrate,
+                     "WetDry"=perc_func_env$WetDry,
+                     stringsAsFactors=T)
+row.names(funcmet)<- funcmet$Sample
+#merge metadata with major taxa data
+func_proplong <- merge(func_proplong, funcmet, by="Sample")
+#Summarize by depth and hydration
+phyla_summary <- 
+  func_proplong %>% # the names of the new data frame and the data frame to be summarised
+  group_by(Substrate, WetDry, functional_groups) %>%   # the grouping variable
+  summarise(mean_prop = mean(Proportion))  # calculates the mean of each group
+## `summarise()` has grouped output by 'Depth', 'Hydration'. You can override using the `.groups` argument.
+phyla_summary
+
+phyla_summary$Substrate <- factor(phyla_summary$Substrate,
+                                 levels=c("L","S", "B")) #reorder variables
+phyla_summary$WetDry <- factor(phyla_summary$WetDry, levels= c("WET","DRY")) #reorder variables
+phyla_summary$functional_groups <- factor(phyla_summary$functional_groups, levels=c("Aquatic_habitat|non-aquatic","Aquatic_habitat|partly_aquatic","Aquatic_habitat|freshwater","Aquatic_habitat|marine"))
+#, levels= rev(c("p__Basidiomycota","p__Mortierellomycota","p__Kickxellomycota","p__Rozellomycota","Unclassified_Phylum","c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Lecanoromycetes", "Unclassified_Ascomycetes","Other")))
+#color palette
+
+
+sublab<- c("Epilithic biofilms", "Leaf litter", "Benthic sediment", "Surface water")
+names(sublab)<- c("B","L","S")
+
+pal12 <- rev(cols25(n=4)) #set n= to the number of taxa you are plotting
+#make stacked bar plot
+phylum_bar <- ggplot(phyla_summary, aes(x = WetDry, y = mean_prop, fill = functional_groups))+
+  geom_bar(stat = "identity", col=I("black")) +
+  scale_fill_manual(values=pal12)+
+  guides(fill=guide_legend(ncol=1))+
+  facet_wrap(~Substrate, labeller = labeller(Substrate=sublab), nrow=1, scales="free_x") +
+  labs(x="Substrate", y="Percentage of Identified ITS Sequence Copies",
+       fill="functional_groups")+
+  #scale_facet_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+  theme(axis.text.x = element_text(angle=60, hjust=1), legend.position = "right")+
+  theme(text=element_text(size=16), #change font size of all text
+        axis.text=element_text(size=11), #change font size of axis text
+        axis.title=element_text(size=11), #change font size of axis titles
+        plot.title=element_text(size=11), #change font size of plot title
+        legend.text=element_text(size=11), #change font size of legend text
+        legend.title=element_text(size=11)) #change font size of legend title  
+phylum_bar
+ 
+#c(180,100) *
+#  0.0394 * # convert mm to inch
+#  600 # convert to pixels
+## [1] 4255.2 2364.0
+plotout <- "aquatic Barplot_WetDry002.tiff"
+agg_tiff(filename=plotout, width=4255, height=2364, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+phylum_bar
+invisible(dev.off())
+```
+
+plot substrate
+```{r}
+#Create an "other" category for the phyla not retained
+#filtered_proportions <- colSums(perc_func_env) - 
+func_prop<- perc_func_env[70:78]/rowSums(perc_func_env[70:78])
+rowSums(func_prop)
+#func_prop <- func_prop
+#Add taxa names as a column
+func_prop$functional_groups <- row.names(func_prop)
+
+#transform into long format
+func_proplong <- gather(func_prop, Sample, Proportion, -functional_groups)
+colnames(func_proplong)<- c("Sample", "functional_groups", "Proportion")
+## [1] "substrate" "WetDry"
+funcmet<-data.frame("Sample"=row.names(perc_func_env),
+                     "Substrate"=perc_func_env$substrate,
+                     "WetDry"=perc_func_env$WetDry,
+                     stringsAsFactors=T)
+row.names(funcmet)<- funcmet$Sample
+#merge metadata with major taxa data
+func_proplong <- merge(func_proplong, funcmet, by="Sample")
+#Summarize by depth and hydration
+phyla_summary <- 
+  func_proplong %>% # the names of the new data frame and the data frame to be summarised
+  group_by(Substrate, WetDry, functional_groups) %>%   # the grouping variable
+  summarise(mean_prop = mean(Proportion))  # calculates the mean of each group
+## `summarise()` has grouped output by 'Depth', 'Hydration'. You can override using the `.groups` argument.
+phyla_summary
+
+phyla_summary$Substrate <- factor(phyla_summary$Substrate,
+                                 levels=c("L","S", "B", "W")) #reorder variables
+phyla_summary$WetDry <- factor(phyla_summary$WetDry, levels= c("WET","DRY")) #reorder variables
+phyla_summary$functional_groups <- factor(phyla_summary$functional_groups)
+#, levels= rev(c("p__Basidiomycota","p__Mortierellomycota","p__Kickxellomycota","p__Rozellomycota","Unclassified_Phylum","c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Lecanoromycetes", "Unclassified_Ascomycetes","Other")))
+#color palette
+
+
+sublab<- c("Epilithic biofilms", "Leaf litter", "Benthic sediment", "Surface water")
+names(sublab)<- c("B","L","S","W")
+
+pal12 <- rev(cols25(n=9)) #set n= to the number of taxa you are plotting
+#make stacked bar plot
+phylum_bar <- ggplot(phyla_summary, aes(x = WetDry, y = mean_prop, fill = functional_groups))+
+  geom_bar(stat = "identity", col=I("black")) +
+  scale_fill_manual(values=pal12)+
+  guides(fill=guide_legend(ncol=1))+
+  facet_wrap(~Substrate, labeller = labeller(Substrate=sublab), nrow=1, scales="free_x") +
+  labs(x="Substrate", y="Percentage of Identified ITS Sequence Copies",
+       fill="functional_groups")+
+  #scale_facet_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+  theme(axis.text.x = element_text(angle=60, hjust=1), legend.position = "right")+
+  theme(text=element_text(size=16), #change font size of all text
+        axis.text=element_text(size=11), #change font size of axis text
+        axis.title=element_text(size=11), #change font size of axis titles
+        plot.title=element_text(size=11), #change font size of plot title
+        legend.text=element_text(size=11), #change font size of legend text
+        legend.title=element_text(size=11)) #change font size of legend title  
+phylum_bar
+ 
+#c(180,100) *
+#  0.0394 * # convert mm to inch
+#  600 # convert to pixels
+## [1] 4255.2 2364.0
+plotout <- "substrateBarplot_WetDry002.tiff"
+agg_tiff(filename=plotout, width=4255, height=2364, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+phylum_bar
+invisible(dev.off())
+```
+
+________________________________
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#### BETA DIVERSITY
+NMDS of fungi, rarefied data
+```{r}
+#rarefied <- Rarefy(cured_asvs, 1265)
+rarefied <- Rarefy(cured_asvs, 3184)
+rarefied$discard
+## [1] "saltob1"
+rarasv<-rarefied$otu.tab.rff
+rarasv<- rarasv[,colSums(rarasv)>0]
+
+## 7760 --> 5511 ASVs after rarefaction of fungi-only sin water
+
+summary(rowSums(rarasv))
+
+## look at read depths for the different substrates:
+asvtab <- otu_table(rarasv, taxa_are_rows = FALSE)
+taxtab <- tax_table(taxtab)
+
+
+### removing stics with not stic data
+#metadata_full<- metadata_full[!is.na(metadata_full$stic_wet_prob),]
+
+#metadata <- sample_data(metadata_full)
+#combine into phyloseq object
+pseqtest <- phyloseq(asvtab, taxtab, metadata)
+#extract easy-to-use sample data
+samdftest <- data.frame(sample_data(pseqtest))
+
+## Examine the read depths by substrate:
+###Leaf
+summary(rowSums(pseqtest@otu_table[pseqtest@sam_data$substrate=="L",]))
+
+###Biofilm
+summary(rowSums(pseqtest@otu_table[pseqtest@sam_data$substrate=="B",]))
+
+###Sediment
+summary(rowSums(pseqtest@otu_table[pseqtest@sam_data$substrate=="S",]))
+
+###Water
+#summary(rowSums(pseqtest@otu_table[pseqtest@sam_data$substrate=="W",]))
+
+### This suggests that for analyses focusing on leaf litter, we might want to rarefy to 5572 reads, whereas analyses including all substrates may need to use a lower threshold to conserve all samples. Furthermore, these values will be even lower if we remove non-fungi, which means we should think carefully about what our different research questions are, and what subsets of this complete dataset would help to answer each given question.  To that end, we should export the component tables of the current phyloseq object and plan out our analyses before returning to 
+unique(samdftest$Site)
+
+```
+
+
+
+
+
+
+## BETA DIVERSITY
+```{r}
+#generate distance matrices
+
+
+braytest <- phyloseq::distance(pseqtest, method = "bray")
+jactest <- phyloseq::distance(pseqtest, method="jaccard", binary=TRUE)
+```
+
+```{r}
+#perform NMDS
+#Bray-Curtis
+braymds <- metaMDS(braytest, k=3, trymax=500, wascores = T)
+## Warning in metaMDS(braytest, k = 2, trymax = 500, wascores = T): stress is
+## (nearly) zero: you may have insufficient data
+brayscores <- scores(braymds)
+braymds
+
+#Jaccard
+jacmds <- metaMDS(jactest, k=3, trymax=500, wascores = T)
+jacscores <- scores(jacmds)
+jacmds
+```
+
+
+
+
+
+```{r}
+#perform NMDS
+#Bray-Curtis
+
+#braymds3 <- metaMDS(braytest, k=3, trymax=500, wascores = T)
+## Warning in metaMDS(braytest, k = 2, trymax = 500, wascores = T): stress is
+## (nearly) zero: you may have insufficient data
+#brayscores3 <- scores(braymds3)
+#Jaccard
+#jacmds3 <- metaMDS(jactest, k=3, trymax=500, wascores = T)
+#jacscores3 <- scores(jacmds3)
+#braymds3
+```
+Call:
+metaMDS(comm = braytest, k = 3, trymax = 500, wascores = T) 
+
+global Multidimensional Scaling using monoMDS
+
+Data:     braytest 
+Distance: bray 
+
+Dimensions: 3 
+Stress:     0.1378213 
+Stress type 1, weak ties
+No convergent solutions - best solution after 500 tries
+Scaling: centring, PC rotation 
+Species: scores missing
+
+
+```{}
+#perform NMDS
+#Bray-Curtis
+braymds4 <- metaMDS(braytest, k=4, trymax=500, wascores = T)
+## Warning in metaMDS(braytest, k = 2, trymax = 500, wascores = T): stress is
+## (nearly) zero: you may have insufficient data
+brayscores4 <- scores(braymds4)
+#Jaccard
+#jacmds3 <- metaMDS(jactest, k=3, trymax=500, wascores = T)
+#jacscores3 <- scores(jacmds3)
+braymds4
+```
+Dimensions: 4 
+Stress:     0.1137273 
+Stress type 1, weak ties
+No convergent solutions - best solution after 500 tries
+Scaling: centring, PC rotation 
+Species: scores missing
+
+
+###Okay, 3 dimensions it is
+
+```{r}
+stressplot(braymds)
+stressplot(jacmds)
+factorfit(jacscores, samdftest$substrate, permutations = 999) # **
+
+factorfit(jacscores, samdftest$flow_state, permutations = 999)
+factorfit(jacscores, samdftest$flow_state, strata = samdftest$substrate, permutations = 999)
+factorfit(jacscores, samdftest$burn_area, permutations = 999) # *
+factorfit(jacscores, samdftest$sub_watershed, permutations = 999) #*
+#biofilm_bray<- brayscores3[samdftest$substrate=='B',]
+#wetB <- samdftest[samdftest$substrate=='B',]
+#factorfit(biofilm_bray, wetB$WetDry, permutations = 999)
+
+```
+
+```{r}
+
+jacfnmds <- plot_ordination(pseqtest, jacmds, type="samples", color="substrate")+
+  geom_point(size=2)+
+  stat_ellipse(
+    #inherit.aes = FALSE, 
+               aes(x=jacscores[,1],y=jacscores[,2]
+                                        #,linetype=(samdftest$WetDry)
+                                        ))+
+  scale_color_discrete(name='Substrate', labels=c('Epilithic Biofilms', 'Leaf Litter', 'Sediment'))+
+  labs(title = "NMDS plot of fungal ASV occurence using Jaccard's Distance", size=6)+
+  annotate("text", x = -0.29, y = 0.42, label = sprintf("k=3, Stress=%.4f",jacmds$stress), size=4.5)
+  #scale_fill_discrete(labels=c('High Program',
+#  custom_colors
+
+jacfnmds
+
+
+png(paste("jacfnmds.png"), width = 500, height = 300)
+
+jacfnmds
+print(jacfnmds)
+
+dev.off()
+
+
+```
+```{r}
+#PERMANOVA
+names(samdftest)
+samdftest$substrate<-as.factor(samdftest$substrate)
+adonis2(jactest ~ substrate, data = samdftest)
+adonis2(jactest ~ flow_state*substrate, data = samdftest)
+
+anosim(jactest, samdftest$substrate)
+anosim(jactest, samdftest$flow_state, strata = samdftest$substrate)
+
+
+adonis2(jactest ~ stream_temp_C_1wk_avg*substrate, data = samdftest)
+
+adonis2(jactest ~ prc_wet*substrate, data = samdftest)
+```
+
+```{}
+
+nmds3plus<- plot_ordination(pseqtest, braymds3, type="samples", color="substrate", shape="WetDry")+
+  geom_point(size=2)+
+  scale_color_discrete(labels=c('Epilithic biofilms', 'Leaf litter', 'Benthic sediment', 'Surface water'))+
+  stat_ellipse(
+    #inherit.aes = FALSE, 
+               aes(x=brayscores3[,1],y=brayscores3[,2],color=samdftest$substrate 
+                                        #,linetype=(samdftest$WetDry)
+                                        ))+
+  aes(linetype=(samdftest$WetDry))+
+  scale_linetype_manual(values=c("dashed","solid"), name="Wet/Dry ellipse")+
+  scale_shape(name="Wet/Dry sample")+
+  labs(title = "NMDS of fungal community composition by substrate")+
+  annotate("text", x = 0.3, y = 0.42, label = sprintf("k=3, Stress=%.4f",braymds3$stress), size=3.5)+
+ # theme(legend.text = element_text(size=10))+
+    theme(text=element_text(size=18), #change font size of all text
+        axis.text=element_text(size=16), #change font size of axis text
+        axis.title=element_text(size=16), #change font size of axis titles
+        plot.title=element_text(size=16), #change font size of plot title
+        legend.text=element_text(size=14), #change font size of legend text
+        strip.text.x = element_text(size = 16),
+        legend.title=element_text(size=16)) #change font size of legend title  
+
+nmds3plus
+
+```
+
+
+
+```{r}
+#PERMANOVA
+names(samdftest)
+adonis2(braytest ~ substrate, data = samdftest)
+adonis2(braytest ~ stic_wet_prob*substrate, data = samdftest)
+
+adonis2(braytest ~ Watershed_old*substrate, data = samdftest)
+adonis2(braytest ~ TWI*substrate, data = samdftest)
+adonis2(braytest ~ substrate*WetDry, data = samdftest)
+adonis2(braytest ~ substrate*Strahler, data = samdftest)
+adonis2(braytest ~ substrate*Shreve, data = samdftest)
+adonis2(braytest ~ substrate*stic_wet_prob, data = samdftest)
+adonis2(braytest ~ substrate*Graminales, data = samdftest)
+adonis2(braytest ~ Rip_type*substrate, data = samdftest)
+
+adonis2(braytest ~ substrate*lnContribWSha, data = samdftest)
+
+adonis2(braytest ~ WetDry, data = samdftest, by=NULL)
+
+adonis2(braytest ~ substrate*WetDry, data = samdftest)
+adonis2(braytest ~ WetDry*substrate, data = samdftest)
+
+anosim(braytest, samdftest$substrate)
+anosim(braytest, samdftest$substrate, strata = samdftest$WetDry)
+anosim(braytest, samdftest$WetDry, strata = samdftest$substrate)
+anosim(braytest, samdftest$Rip_type, strata = samdftest$substrate)
+
+#adonis2(jactest ~ Watershed*substrate, data = samdftest)
+#adonis2(jactest ~ substrate*TWI, data = samdftest)
+#adonis2(jactest ~ TWI*WetDry, data = samdftest)
+#adonis2(jactest ~ WetDry*substrate, data = samdftest)
+
+
+
+```
+
+
+
+
+
+Just leaves, just sediment, just biofilms...
+
+DIVIDE BY SUBSTRATE
+
+```{r}
+### Biofilms rarefied to 1265
+
+meta_B<- metadata_full[metadata_full$substrate=='B',]
+metadata_B <- sample_data(meta_B)
+
+rarefied <- Rarefy(cured_asvs, 1265)
+rarefied$discard
+## [1] "saltob1"
+rarasv<-rarefied$otu.tab.rff
+rarasv<- rarasv[,colSums(rarasv)>0]
+asvtab <- otu_table(rarasv, taxa_are_rows = FALSE)
+#combine into phyloseq object
+pseqtest_B <- phyloseq(asvtab, taxtab, metadata_B)
+#remove ASVs with zero read across all samples
+pseqtest_B@otu_table <- pseqtest_B@otu_table[,colSums(pseqtest_B@otu_table)>0]
+### 2271 ASVs
+samdftest_B <- data.frame(sample_data(pseqtest_B))
+
+
+### Leaves rarefied to 5393
+meta_L<- metadata_full[metadata_full$substrate=='L',]
+metadata_L <- sample_data(meta_L)
+
+rarefied <- Rarefy(cured_asvs, 5393)
+rarefied$discard
+## [1] "saltob1"
+rarasv<-rarefied$otu.tab.rff
+rarasv<- rarasv[,colSums(rarasv)>0]
+asvtab <- otu_table(rarasv, taxa_are_rows = FALSE)
+#combine into phyloseq object
+pseqtest_L <- phyloseq(asvtab, taxtab, metadata_L)
+#remove ASVs with only one read across all samples
+pseqtest_L@otu_table <- pseqtest_L@otu_table[,colSums(pseqtest_L@otu_table)>0]
+#### 3234 ASVs
+samdftest_L <- data.frame(sample_data(pseqtest_L))
+
+
+#sediment rarefied to 1800
+meta_S<- metadata_full[metadata_full$substrate=='S',]
+metadata_S <- sample_data(meta_S)
+
+rarefied <- Rarefy(cured_asvs, 1800)
+rarefied$discard
+## [1] "saltob1"
+rarasv<-rarefied$otu.tab.rff
+rarasv<- rarasv[,colSums(rarasv)>0]
+asvtab <- otu_table(rarasv, taxa_are_rows = FALSE)
+#combine into phyloseq object
+pseqtest_S <- phyloseq(asvtab, taxtab, metadata_S)
+#remove ASVs with only one read across all samples
+pseqtest_S@otu_table <- pseqtest_S@otu_table[,colSums(pseqtest_S@otu_table)>0]
+#3593
+samdftest_S <- data.frame(sample_data(pseqtest_S))
+
+```
+
+
+
+
+
+
+### nmds and permanova by sub
+
+```{r}
+#perform NMDS
+#pl_stic<- pseqtest_L[pseqtest_L@sam_data$stic_wet_prob]
+
+#Bray-Curtis
+braytest_L <- phyloseq::distance(pseqtest_L, method = "bray")
+
+#PERMANOVA
+names(samdftest)
+adonis2(braytest_L ~ TWI, data = samdftest_L)
+adonis2(braytest_L ~ Strahler, data = samdftest_L)
+adonis2(braytest_L ~ TWI*Biofilm_Chl.a_.ug.cm2., data = samdftest_L)
+adonis2(braytest_L ~ Biofilm_Chl.a_.ug.cm2., data = samdftest_L)
+adonis2(braytest_L ~ Strahler*Rip_type, data = samdftest_L)
+adonis2(braytest_L ~ Watershed_LTER*Rip_type, data = samdftest_L)
+
+adonis2(braytest_L ~ stic_wet_prob*CanopyCoverPct, data = samdftest_L)
+adonis2(braytest_L ~ TWI*Graminales, data = samdftest_L)
+###
+adonis2(braytest_L ~ Rip_type*WetDry, data = samdftest_L)
+adonis2(braytest_L ~ lnContribWSha, data = samdftest_L)
+adonis2(braytest_L ~ Graminales, data = samdftest_L)
+adonis2(braytest_L ~ Rip_type, data = samdftest_L)
+
+
+#Bray-Curtis
+braytest_B <- phyloseq::distance(pseqtest_B, method = "bray")
+#braytest_B <- phyloseq::distance(pseqtest_B, method = "jaccard")
+
+#PERMANOVA
+names(samdftest)
+adonis2(braytest_B ~ Strahler*Watershed_LTER, data = samdftest_B)
+adonis2(braytest_B ~ lnContribWSha*CanopyCoverPct, data = samdftest_B)
+adonis2(braytest_B ~ lnContribWSha*Biofilm_Chl.a_.ug.cm2., data = samdftest_B)
+adonis2(braytest_B ~ stic_wet_prob*Watershed_LTER, data = samdftest_B)
+adonis2(braytest_B ~ WetDry*Watershed_LTER, data = samdftest_B)
+adonis2(braytest_B ~ stic_wet_prob*CanopyCoverPct, data = samdftest_B)
+adonis2(braytest_B ~ Biofilm_Chl.a_.ug.cm2.*Watershed_LTER, data = samdftest_B)
+adonis2(braytest_B ~ Shreve*CanopyCoverPct, data = samdftest_B)
+adonis2(braytest_B ~ TWI, data = samdftest_B)
+adonis2(braytest_B ~ Strahler*Biofilm_Chl.a_.ug.cm2., data = samdftest_B)
+adonis2(braytest_B ~ lnContribWSha, data = samdftest_B)
+adonis2(braytest_B ~ WetDry*CanopyCoverPct, data = samdftest_B)
+adonis2(braytest_B ~ Watershed_LTER*Biofilm_Chl.a_.ug.cm2., data = samdftest_B)
+
+
+#Bray-Curtis
+braytest_S <- phyloseq::distance(pseqtest_S, method = "bray")
+#PERMANOVA
+names(samdftest)
+adonis2(braytest_S ~ TWI, data = samdftest_S)
+adonis2(braytest_S ~ Strahler, data = samdftest_S)
+adonis2(braytest_S ~ lnContribWSha, data = samdftest_S)
+adonis2(braytest_S ~ Watershed_LTER, data = samdftest_S)
+
+adonis2(braytest_S ~ Watershed_LTER*stic_wet_prob, data = samdftest_S)
+adonis2(braytest_S ~ stic_wet_prob, data = samdftest_S)
+adonis2(braytest_S ~ Biofilm_Chl.a_.ug.cm2., data = samdftest_S)
+adonis2(braytest_S ~ Rip_type, data = samdftest_S)
+
+adonis2(braytest_S ~ TWI*CanopyCoverPct, data = samdftest_S)
+adonis2(braytest_S ~ lnContribWSha*stic_wet_prob, data = samdftest_S)
+adonis2(braytest_S ~ stic_wet_prob*Biofilm_Chl.a_.ug.cm2., data = samdftest_S)
+adonis2(braytest_S ~ Strahler*Rip_type, data = samdftest_S)
+adonis2(braytest_S ~ stic_wet_prob*Graminales, data = samdftest_S)
+adonis2(braytest_S ~ TWI*Graminales, data = samdftest_S)
+
+
+adonis2(braytest ~ Watershed_old*substrate, data = samdftest)
+adonis2(braytest ~ substrate*TWI, data = samdftest)
+adonis2(braytest ~ substrate*WetDry, data = samdftest)
+adonis2(braytest ~ substrate*Strahler, data = samdftest)
+adonis2(braytest ~ substrate*Shreve, data = samdftest)
+adonis2(braytest ~ substrate*stic_wet_prob, data = samdftest)
+adonis2(braytest ~ substrate*Graminales, data = samdftest)
+adonis2(braytest ~ Rip_type*substrate, data = samdftest)
+
+adonis2(braytest ~ substrate*ContributingArea_ha, data = samdftest)
+
+
+braymds3L <- metaMDS(braytest_L, k=3, trymax=500, wascores = T)
+## Warning in metaMDS(braytest, k = 2, trymax = 500, wascores = T): stress is
+## (nearly) zero: you may have insufficient data
+brayscores3L <- scores(braymds3L)
+#Jaccard
+#jacmds3 <- metaMDS(jactest, k=3, trymax=500, wascores = T)
+#jacscores3 <- scores(jacmds3)
+braymds3L
+
+nmdsp3 <- plot_ordination(pseqtest_L, braymds3L, type="samples", color="FlowStag", shape="Watershed")+
+  geom_point(size=2)
+nmdsp3
+
+nmds3plus<- plot_ordination(pseqtest_L, braymds3L, type="samples", color="FlowStag", shape="Rip_type")+
+  geom_point(size=2)+
+ # scale_color_discrete(labels=c('Epilithic biofilms', 'Leaf litter', 'Benthic sediment', 'Surface water'))+
+  stat_ellipse(
+    inherit.aes = FALSE, 
+               aes(x=brayscores3L[,1],y=brayscores3L[,2],
+                   #color=samdftest_L$WetDry 
+                                        ,linetype=(samdftest_L$WetDry)
+                                        ))+
+  #aes(linetype=(samdftest_L$FlowStag))+
+ scale_linetype_manual(values=c("dashed","solid"), name="Wet/Dry")+
+  scale_color_discrete(name="Flow status")+
+  scale_shape(name="Riparian vegetation type")+
+  labs(title = "NMDS of fungal community composition in Leaf Litter")+
+  annotate("text", x = -0.25, y = 0.42, label = sprintf("k=3, Stress=%.4f",braymds3L$stress), size=3.5)+
+ # theme(legend.text = element_text(size=10))+
+    theme(text=element_text(size=14), #change font size of all text
+        axis.text=element_text(size=14), #change font size of axis text
+        axis.title=element_text(size=14), #change font size of axis titles
+        plot.title=element_text(size=14), #change font size of plot title
+        legend.text=element_text(size=14), #change font size of legend text
+        strip.text.x = element_text(size = 14),
+        legend.title=element_text(size=14)) #change font size of legend title  
+
+nmds3plus
+
+
+```
+
+```{r}
+
+
+braymds3S <- metaMDS(braytest_S, k=2, trymax=500, wascores = T)
+## Warning in metaMDS(braytest, k = 2, trymax = 500, wascores = T): stress is
+## (nearly) zero: you may have insufficient data
+brayscores3S <- scores(braymds3S)
+#Jaccard
+#jacmds3 <- metaMDS(jactest, k=3, trymax=500, wascores = T)
+#jacscores3 <- scores(jacmds3)
+braymds3S
+
+nmdsp3 <- plot_ordination(pseqtest_S, braymds3S, type="samples", color="FlowStag", shape="Watershed")+
+  geom_point(size=2)
+nmdsp3
+pseqtest_S@sam_data$Strahler<- as.factor(pseqtest_S@sam_data$Strahler)
+
+nmds3plus<- plot_ordination(pseqtest_S, braymds3S, type="samples", color="FlowStag", shape="Strahler")+
+  geom_point(size=2)+
+ # scale_color_discrete(labels=c('Epilithic biofilms', 'Leaf litter', 'Benthic sediment', 'Surface water'))+
+  stat_ellipse(
+    inherit.aes = FALSE, 
+               aes(x=brayscores3S[,1],y=brayscores3S[,2],
+                   #color=samdftest_S$WetDry 
+                                        ,linetype=(samdftest_S$WetDry)
+                                        ))+
+  #aes(linetype=(samdftest_S$FlowStag))+
+ scale_linetype_manual(values=c("dashed","solid"), name="Wet/Dry")+
+  scale_color_discrete(name="Flow status")+
+  scale_shape(name="Stream order (Strahler)")+
+  labs(title = "NMDS of fungal community composition in Sediment")+
+  annotate("text", x = -0.25, y = 0.42, label = sprintf("k=2, Stress=%.4f",braymds3S$stress), size=3.5)+
+ # theme(legend.text = element_text(size=10))+
+    theme(text=element_text(size=14), #change font size of all text
+        axis.text=element_text(size=14), #change font size of axis text
+        axis.title=element_text(size=14), #change font size of axis titles
+        plot.title=element_text(size=14), #change font size of plot title
+        legend.text=element_text(size=14), #change font size of legend text
+        strip.text.x = element_text(size = 14),
+        legend.title=element_text(size=14)) #change font size of legend title  
+
+nmds3plus
+
+```
+Dimensions: 2 
+Stress:     0.1690687 
+Stress type 1, weak ties
+Two convergent solutions found after 308 tries
+Scaling: centring, PC rotation 
+Species: scores missing
+
+
+
+```{r}
+
+
+braymds3B <- metaMDS(braytest_B, k=2, trymax=500, wascores = T)
+## Warning in metaMDS(braytest, k = 2, trymax = 500, wascores = T): stress is
+## (nearly) zero: you may have insufficient data
+brayscores3B <- scores(braymds3B)
+#Jaccard
+#jacmds3 <- metaMDS(jactest, k=3, trymax=500, wascores = T)
+#jacscores3 <- scores(jacmds3)
+braymds3B
+
+nmdsp3 <- plot_ordination(pseqtest_B, braymds3B, type="samples", color="FlowStag", shape="Watershed")+
+  geom_point(size=2)
+nmdsp3
+pseqtest_B@sam_data$Strahler<- as.factor(pseqtest_B@sam_data$Strahler)
+
+nmds3plus<- plot_ordination(pseqtest_B, braymds3B, type="samples", color="FlowStag", shape="Strahler")+
+  geom_point(size=2)+
+ # scale_color_discrete(labels=c('Epilithic biofilms', 'Leaf litter', 'Benthic sediment', 'Surface water'))+
+  stat_ellipse(
+    inherit.aes = FALSE, 
+               aes(x=brayscores3B[,1],y=brayscores3B[,2],
+                   #color=samdftest_S$WetDry 
+                                        linetype=(samdftest_B$WetDry)
+                                        ))+
+  #aes(linetype=(samdftest_S$FlowStag))+
+ scale_linetype_manual(values=c("dashed","solid"), name="Wet/Dry")+
+  scale_color_discrete(name="Flow status")+
+  scale_shape(name="Stream order (Strahler)")+
+  labs(title = "NMDS of fungal community composition in Epilithon")+
+  annotate("text", x = 0.4, y = -0.42, label = sprintf("k=2, Stress=%.4f",braymds3B$stress), size=3.5)+
+ # theme(legend.text = element_text(size=10))+
+    theme(text=element_text(size=14), #change font size of all text
+        axis.text=element_text(size=14), #change font size of axis text
+        axis.title=element_text(size=14), #change font size of axis titles
+        plot.title=element_text(size=14), #change font size of plot title
+        legend.text=element_text(size=14), #change font size of legend text
+        strip.text.x = element_text(size = 14),
+        legend.title=element_text(size=14)) #change font size of legend title  
+
+nmds3plus
+
+```
+
+
+```{}
+
+# Perform PCoA
+pcoa <- ordinate(pseqtest_L, "PCoA", wascores=T)
+
+# Plot the results
+plot_ordination(pseqtest_L, pcoa, color = "WetDry", title = "PCoA of Fungal Assemblages from Leaf Litter")
+
+#env_data <- as(sample_data(pseqtest_L), "data.frame")
+#cap <- capscale(brayscores3L ~ TWI + lnContribWSha + Elevation_m + Strahler + stic_wet_prob + CanopyCoverPct + Graminales                , data = env_data)
+#pcoa_scores<- scores(pcoa)
+pcoa_with_env <- envfit(pcoa$vectors, env_data[,c("TWI", "lnContribWSha", "Elevation_m", "Strahler", "stic_wet_prob", "CanopyCoverPct", "Graminales")], perm = 999)
+
+# Convert envfit object to a data frame
+envfit_df <- data.frame(variable = rownames(pcoa_with_env$vectors),
+                        x = 0, y = 0, xend = pcoa_with_env$vectors[,1], yend = pcoa_with_env$vectors[,2])
+
+plot_ordination(pseqtest_L, pcoa, color = "Rip_type", title = "PCoA with env vars") +
+  geom_segment(data = envfit_df, aes(x = 0, y = 0, xend = arrows$x, yend = arrows$y), arrow = arrow(length = unit(0.1, "cm")))
+
+
+
+
+
+
+
+WetDry=samdftest$WetDry
+
+nmds3plus<- plot_ordination(pseqtest, braymds3, type="samples", color="substrate", shape="WetDry")+
+  geom_point(size=2)+
+  scale_color_discrete(labels=c('Epilithic biofilms', 'Leaf litter', 'Benthic sediment', 'Surface water'))+
+  stat_ellipse(
+    #inherit.aes = FALSE, 
+               aes(x=brayscores3[,1],y=brayscores3[,2],color=samdftest$substrate 
+                                        #,linetype=(samdftest$WetDry)
+                                        ))+
+  aes(linetype=(samdftest$WetDry))+
+  scale_linetype_manual(values=c("dashed","solid"), name="Wet/Dry ellipse")+
+  scale_shape(name="Wet/Dry sample")+
+  labs(title = "NMDS of fungal community composition by substrate")+
+  annotate("text", x = 0.3, y = 0.42, label = sprintf("k=3, Stress=%.4f",braymds3$stress), size=3.5)+
+ # theme(legend.text = element_text(size=10))+
+    theme(text=element_text(size=18), #change font size of all text
+        axis.text=element_text(size=16), #change font size of axis text
+        axis.title=element_text(size=16), #change font size of axis titles
+        plot.title=element_text(size=16), #change font size of plot title
+        legend.text=element_text(size=14), #change font size of legend text
+        strip.text.x = element_text(size = 16),
+        legend.title=element_text(size=16)) #change font size of legend title  
+
+nmds3plus
+
+```
+
+
+
+
+
+
+OKAY back to Alpha
+
+
+
+# ALPHA DIVERSITY
+Documentation for `estimate_richness` advises you do not rarefy data beforehand, so I am testing on the `beta` pseqtest version. 
+```{r}
+#setwd("/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs")
+#calculate alpha diversity
+#write.csv(samdftest, "/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs/metadata.csv" )
+#metadata <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/metadata.csv", stringsAsFactors=TRUE)
+
+#pseqtest <- pseqtestBetac
+#samdftest <- samdftestBetac
+
+
+alpha <- estimate_richness(pseqtest, split=TRUE, measures=NULL)
+#write.csv(alpha, "alpha diversity temp.csv")
+#alpha2 <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/alpha diversity.csv", stringsAsFactors=TRUE)
+
+#alpha's row names got messed up, but order is conserved, so set row.names to samdftest
+row.names(alpha)<- row.names(samdftest)
+
+alpha <- merge(samdftest, alpha, by= 'row.names', all=TRUE)
+row.names(alpha) <- alpha$Row.names 
+alpha 
+#write.csv(alpha, "alpharar diversity_fungi_040723.csv")
+
+pseq_richplot<- plot_richness(pseqtest, x = "substrate", color = "substrate", measures = c("Observed","Shannon"))
+
+
+              
+```
+
+#MANOVA
+```{r}
+#alpha <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs/alpha diversitynr.csv", row.names=1, stringsAsFactors=TRUE)
+man1 <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ substrate, data=alpha)
+hist(man1$residuals)
+plot(man1$residuals ~ man1$fitted.values)
+summary.aov(man1)
+```
+#Substrate showed significant effect on Shannon diversity of fungal ASVs  
+
+Response Shannon :
+             Df Sum Sq Mean Sq F value    Pr(>F)    
+substrate     2 13.218  6.6088  13.486 4.538e-06 ***
+Residuals   136 66.645  0.4900                      
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+```{r}
+man2 <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ tempC_mean*substrate, data=alpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+man3 <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ prc_wet*substrate, data=alpha)
+hist(man3$residuals)
+plot(man3$residuals ~ man3$fitted.values)
+summary.aov(man3)
+man4 <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ burn_area*substrate, data=alpha)
+hist(man4$residuals)
+plot(man4$residuals ~ man4$fitted.values)
+summary.aov(man4)
+man5 <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ elevation*substrate, data=alpha)
+hist(man5$residuals)
+plot(man5$residuals ~ man5$fitted.values)
+summary.aov(man5)
+
+man <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ flow_state*substrate, data=alpha)
+hist(man$residuals)
+plot(man$residuals ~ man$fitted.values)
+summary.aov(man)
+man <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ stream_temp_C_1wk_avg*substrate, data=alpha)
+hist(man$residuals)
+plot(man$residuals ~ man$fitted.values)
+summary.aov(man)
+```
+ Elevation explains Shannon diversity by substrate
+ 
+ Response Shannon :
+                     Df Sum Sq Mean Sq F value    Pr(>F)    
+elevation             1  1.824  1.8239  3.9664   0.04846 *  
+substrate             2 13.411  6.7055 14.5824 1.879e-06 ***
+elevation:substrate   2  3.470  1.7349  3.7728   0.02548 *  
+Residuals           133 61.158  0.4598          
+
+Also, stream temperature in the week before corresponds with Shannon diversity
+ Response Shannon :
+                                 Df Sum Sq Mean Sq F value    Pr(>F)    
+stream_temp_C_1wk_avg             1  1.586  1.5858  3.3569   0.06927 .  
+substrate                         2 13.335  6.6675 14.1145 2.916e-06 ***
+stream_temp_C_1wk_avg:substrate   2  3.350  1.6751  3.5461   0.03172 *  
+Residuals                       127 59.993  0.4724                      
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+```{r}
+man <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ stream_order*substrate, data=alpha)
+hist(man$residuals)
+plot(man$residuals ~ man$fitted.values)
+summary.aov(man)
+```
+ Response Shannon :
+                        Df Sum Sq Mean Sq F value    Pr(>F)    
+stream_order             1  1.987  1.9869  4.1676   0.04318 *  
+substrate                2 13.231  6.6153 13.8759 3.363e-06 ***
+stream_order:substrate   2  1.238  0.6189  1.2981   0.27649    
+Residuals              133 63.408  0.4767                      
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+```{r}
+man <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ flow_state*substrate, data=alpha)
+hist(man$residuals)
+plot(man$residuals ~ man$fitted.values)
+summary.aov(man)
+```
+
+
+Testing alpha diversity correlations by substrate:
+
+```{r}
+###Correlation tests for alpha diversity, by substrate
+alpha_L<- alpha[alpha$substrate=='L',]
+alpha_S<- alpha[alpha$substrate=='S',]
+alpha_B<- alpha[alpha$substrate=='B',]
+
+###Elevation
+cor_areaL<-cor.test(alpha_L$Shannon, alpha_L$elevation, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Shannon, alpha_B$elevation, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Shannon, alpha_S$elevation, method = "pearson")
+cor_areaS
+#### significant for leaf and epilithon
+
+###stream_temp_C_1wk_avg
+cor_areaL<-cor.test(alpha_L$Shannon, alpha_L$stream_temp_C_1wk_avg, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Shannon, alpha_B$stream_temp_C_1wk_avg, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Shannon, alpha_S$stream_temp_C_1wk_avg, method = "pearson")
+cor_areaS
+
+
+### drainage_area
+cor_areaL<-cor.test(alpha_L$Shannon, alpha_L$drainage_area, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Shannon, alpha_B$drainage_area, method = "pearson")
+cor_areaB ###*
+cor_areaS<-cor.test(alpha_S$Shannon, alpha_S$drainage_area, method = "pearson")
+cor_areaS
+
+## pH
+cor_areaL<-cor.test(alpha_L$Shannon, alpha_L$pH, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Shannon, alpha_B$pH, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Shannon, alpha_S$pH, method = "pearson")
+cor_areaS
+
+### alpha.cent
+cor_areaL<-cor.test(alpha_L$Shannon, alpha_L$alpha.cent, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Shannon, alpha_B$alpha.cent, method = "pearson")
+cor_areaB ## *
+cor_areaS<-cor.test(alpha_S$Shannon, alpha_S$alpha.cent, method = "pearson")
+cor_areaS
+
+### B_Chl.a_ug_per_cm2
+cor_areaL<-cor.test(alpha_L$Shannon, alpha_L$B_Chl.a_ug_per_cm2, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Shannon, alpha_B$B_Chl.a_ug_per_cm2, method = "pearson")
+cor_areaB ## *
+cor_areaS<-cor.test(alpha_S$Shannon, alpha_S$B_Chl.a_ug_per_cm2, method = "pearson")
+cor_areaS
+```
+
+
+
+```{r}
+
+shalpha_TWI <- ggplot(alpha, aes(x=stream_temp_C_1wk_avg, y=Shannon)) +
+  facet_grid(. ~ substrate)+
+  geom_point(aes(colour=substrate)) +
+  geom_smooth(method = 'lm')+
+  ylab("Shannon Diversity of fungal ASVs")
+shalpha_TWI
+
+shalpha_TWI <- ggplot(alpha, aes(x=prc_wet, y=Shannon)) +
+  facet_grid(. ~ substrate)+
+  geom_point(aes(colour=substrate)) +
+  geom_smooth(method = 'lm')+
+  ylab("Shannon Diversity of fungal ASVs")
+shalpha_TWI
+
+shalpha_TWI <- ggplot(alpha, aes(x=elevation, y=Shannon)) +
+  facet_grid(. ~ substrate)+
+  geom_point(aes(colour=substrate)) +
+  geom_smooth(method = 'lm')+
+  ylab("Shannon Diversity of fungal ASVs")
+shalpha_TWI
+
+lm_alpha_twi_L <- lm(alpha$Shannon ~ alpha$prc_wet, data = alpha, subset = alpha$substrate=='L')
+summary(lm_alpha_twi_L)
+lm_alpha_twi_L <- lm(alpha$Shannon ~ alpha$stream_temp_C_1wk_avg, data = alpha, subset = alpha$substrate=='L')
+summary(lm_alpha_twi_L)
+lm_alpha_twi_L <- lm(alpha$Shannon ~ alpha$elevation, data = alpha, subset = alpha$substrate=='L')
+summary(lm_alpha_twi_L)
+#stream_temp_C_1wk_avg
+
+```
+
+effect of elevation on alpha diversity in leaves
+Call:
+lm(formula = alpha$Shannon ~ alpha$elevation, data = alpha, subset = alpha$substrate == 
+    "L")
+
+Residuals:
+    Min      1Q  Median      3Q     Max 
+-1.9896 -0.2024  0.0724  0.4001  0.8527 
+
+Coefficients:
+                 Estimate Std. Error t value Pr(>|t|)    
+(Intercept)      9.896042   2.312033   4.280 9.12e-05 ***
+alpha$elevation -0.016348   0.006167  -2.651   0.0109 *  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Residual standard error: 0.6324 on 47 degrees of freedom
+Multiple R-squared:  0.1301,	Adjusted R-squared:  0.1116 
+F-statistic: 7.027 on 1 and 47 DF,  p-value: 0.01091
+
+```{r}
+
+man3 <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ Elevation_m*substrate, data=alpha)
+hist(man3$residuals)
+plot(man3$residuals ~ man3$fitted.values)
+summary.aov(man3)
+lm_alpha_twi_B <- lm(alpha$Observed ~ alpha$lnContribWSha, data = alpha, subset = alpha$substrate=='B')
+summary(lm_alpha_twi_B)
+lm_alpha_twi_L <- lm(alpha$Observed ~ alpha$lnContribWSha, data = alpha, subset = alpha$substrate=='L')
+summary(lm_alpha_twi_L)
+lm_alpha_twi_S <- lm(alpha$Observed ~ alpha$lnContribWSha, data = alpha, subset = alpha$substrate=='S')
+summary(lm_alpha_twi_S)
+#stream_temp_C_1wk_avg
+
+alpha_L<- alpha[alpha$substrate=='L',]
+alpha_S<- alpha[alpha$substrate=='S',]
+alpha_B<- alpha[alpha$substrate=='B',]
+
+cor_areaL<-cor.test(alpha_L$Observed, alpha_L$lnContribWSha, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Observed, alpha_B$lnContribWSha, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Observed, alpha_S$lnContribWSha, method = "pearson")
+cor_areaS
+
+cor_areaL<-cor.test(alpha_L$Observed, alpha_L$NO3_mgL, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Observed, alpha_B$NO3_mgL, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Observed, alpha_S$NO3_mgL, method = "pearson")
+cor_areaS
+
+cor_areaL<-cor.test(alpha_L$Observed, alpha_L$SO4_mgL, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Observed, alpha_B$SO4_mgL, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Observed, alpha_S$SO4_mgL, method = "pearson")
+cor_areaS
+
+cor_areaL<-cor.test(alpha_L$Observed, alpha_L$TWI, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Observed, alpha_B$TWI, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Observed, alpha_S$TWI, method = "pearson")
+cor_areaS
+
+
+
+#lm_alpha_twi_W <- lm(alpha$Observed ~ alpha$TWI, data = alpha, subset = alpha$substrate=='W')
+#summary(lm_alpha_twi_W)
+
+alpha_TWI <- ggplot(alpha, aes(x=lnContribWSha, y=Observed, colour=substrate)) +
+  facet_grid(. ~ substrate)+
+  #geom_boxplot()+
+  geom_point(aes(shape=WetDry)) +
+  xlab(label='Watershed area (ln hectares)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Fungal ASVs observed")+
+  labs(title = "Fungal ASV richness by contributing watershed area")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+#alpha.c <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs/alpha diversity_stats_class_eg.csv", row.names=1)
+  # View(alpha.diversity_stats_class_eg)
+
+alphap1 <- ggplot(alpha, aes(x=subwet, y=Richness_log_trans, shape=WetDry)) +
+  geom_boxplot(aes(fill=alpha$substrate), show.legend = TRUE) +
+   geom_jitter()+
+#  scale_fill_grey(start=0.9, end=0.35) +
+  ylab("Fungal ASV richness, log transformed")+
+#  geom_signif(comparisons = split(t(combn(levels(alpha$substrate), 2)), seq(nrow(t(combn(levels(alpha$substrate), 2))))), y_position = 67, map_signif_level = TRUE, step_increase=0.12)+ 
+#scale_x_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+  labs(title = "Taxon (ASV) richness by substrate and Wet/Dry")
+ # geom_jitter(aes(colour=alpha$substrate), show.legend = FALSE) +
+#  theme(axis.text.x = element_text(angle=20, hjust=0.9, size=12))
+ # theme(text=element_text(size=20), #change font size of all text
+ #       axis.text=element_text(size=11), #change font size of axis text
+  #      axis.title=element_text(size=11), #change font size of axis titles
+   #     plot.title=element_text(size=11), #change font size of plot title
+    #    legend.text=element_text(size=11), #change font size of legend text
+     #   legend.title=element_text(size=11)) #change font size of legend title  
+alphap1
+
+```
+
+
+
+```{r}
+alphap1 <- ggplot(alpha, aes(x=substrate, y=Observed)) +
+  geom_boxplot(aes(fill=alpha$substrate), show.legend = FALSE) +
+#  scale_fill_grey(start=0.9, end=0.35) +
+  ylab("ASVs Observed")+
+  geom_signif(comparisons = split(t(combn(levels(alpha$substrate), 2)), seq(nrow(t(combn(levels(alpha$substrate), 2))))), y_position = 67, map_signif_level = TRUE, step_increase=0.12)+ 
+scale_x_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+  labs(title = "Taxon (ASV) richness by substrate")+
+ # geom_jitter(aes(colour=alpha$substrate), show.legend = FALSE) +
+  theme(axis.text.x = element_text(angle=20, hjust=0.9, size=12))
+ # theme(text=element_text(size=20), #change font size of all text
+ #       axis.text=element_text(size=11), #change font size of axis text
+  #      axis.title=element_text(size=11), #change font size of axis titles
+   #     plot.title=element_text(size=11), #change font size of plot title
+    #    legend.text=element_text(size=11), #change font size of legend text
+     #   legend.title=element_text(size=11)) #change font size of legend title  
+alphap1
+#cor.test(alpha$substrate)
+
+sublablist<- c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment')
+sub_labeller <- function(variable,value){
+  return(sublablist[value])
+}
+library("ggpattern") 
+myColors <- c("#00BFC4", "#F8766D","#7CAE00")
+names(myColors) <- levels(alpha$substrate)
+custom_colors <- scale_colour_manual(name = alpha$substrate, values = myColors)
+df <- data.frame(level = levels(alpha$substrate), outcome = c("#00BFC4", "#F8766D","#7CAE00"))
+
+alpha$WetDry <- factor(alpha$WetDry, levels= c("WET","DRY"))
+alphap2 <- ggplot(alpha, aes(x=WetDry, y=Observed)) +
+  facet_grid(. ~ substrate, labeller = sub_labeller)+
+  scale_x_discrete(labels=c('WET'='Wet', 'DRY'='Dry'))+
+  geom_boxplot() +
+  geom_boxplot_pattern(aes(pattern = WetDry), outlier.shape = NA, show.legend = FALSE) +
+  scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("ASVs Observed")+
+ # geom_signif(comparisons = list(c("WET", "DRY")), y_position = 300,
+  #            map_signif_level=TRUE)+
+  labs(title = "Taxon (ASV) richness in Wet versus Dry sites")+
+  scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment'))+
+  aes(fill=alpha$substrate, show.legend=FALSE)+
+  theme(legend.position='none',axis.text.x = element_text(size=14), axis.title.x = element_blank(),strip.text.x = element_text(size = 11))
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+alphap2
+
+alpha_TWI <- ggplot(alpha, aes(x=Graminales, y=Observed)) +
+  facet_grid(. ~ substrate)+
+  geom_boxplot()+
+  geom_point(aes(colour=WetDry)) +
+  geom_smooth(method = 'lm')+
+  ylab("Fungal ASVs observed")
+alpha_TWI
+
+shalpha_TWI <- ggplot(alpha, aes(x=TWI, y=Shannon)) +
+  facet_grid(. ~ substrate)+
+  geom_point(aes(colour=WetDry, shape=Watershed_LTER)) +
+  geom_smooth(method = 'lm')+
+  ylab("Shannon Diversity of fungal ASVs")
+shalpha_TWI
+man3 <- manova(cbind(Observed, Chao1, Shannon, InvSimpson) ~ Elevation_m*substrate, data=alpha)
+hist(man3$residuals)
+plot(man3$residuals ~ man3$fitted.values)
+summary.aov(man3)
+lm_alpha_twi_B <- lm(alpha$Observed ~ alpha$lnContribWSha, data = alpha, subset = alpha$substrate=='B')
+summary(lm_alpha_twi_B)
+lm_alpha_twi_L <- lm(alpha$Observed ~ alpha$lnContribWSha, data = alpha, subset = alpha$substrate=='L')
+summary(lm_alpha_twi_L)
+lm_alpha_twi_S <- lm(alpha$Observed ~ alpha$lnContribWSha, data = alpha, subset = alpha$substrate=='S')
+summary(lm_alpha_twi_S)
+#stream_temp_C_1wk_avg
+
+alpha_L<- alpha[alpha$substrate=='L',]
+alpha_S<- alpha[alpha$substrate=='S',]
+alpha_B<- alpha[alpha$substrate=='B',]
+
+cor_areaL<-cor.test(alpha_L$Observed, alpha_L$lnContribWSha, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Observed, alpha_B$lnContribWSha, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Observed, alpha_S$lnContribWSha, method = "pearson")
+cor_areaS
+
+cor_areaL<-cor.test(alpha_L$Observed, alpha_L$NO3_mgL, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Observed, alpha_B$NO3_mgL, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Observed, alpha_S$NO3_mgL, method = "pearson")
+cor_areaS
+
+cor_areaL<-cor.test(alpha_L$Observed, alpha_L$SO4_mgL, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Observed, alpha_B$SO4_mgL, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Observed, alpha_S$SO4_mgL, method = "pearson")
+cor_areaS
+
+cor_areaL<-cor.test(alpha_L$Observed, alpha_L$TWI, method = "pearson")
+cor_areaL
+cor_areaB<-cor.test(alpha_B$Observed, alpha_B$TWI, method = "pearson")
+cor_areaB
+cor_areaS<-cor.test(alpha_S$Observed, alpha_S$TWI, method = "pearson")
+cor_areaS
+
+
+
+#lm_alpha_twi_W <- lm(alpha$Observed ~ alpha$TWI, data = alpha, subset = alpha$substrate=='W')
+#summary(lm_alpha_twi_W)
+
+alpha_TWI <- ggplot(alpha, aes(x=lnContribWSha, y=Observed, colour=substrate)) +
+  facet_grid(. ~ substrate)+
+  #geom_boxplot()+
+  geom_point(aes(shape=WetDry)) +
+  xlab(label='Watershed area (ln hectares)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Fungal ASVs observed")+
+  labs(title = "Fungal ASV richness by contributing watershed area")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+alpha_TWI <- ggplot(alpha, aes(x=Discharge..L.s., y=Shannon, colour=substrate)) +
+  facet_grid(. ~ substrate)+
+  #geom_boxplot()+
+  geom_point(aes(shape=WetDry)) +
+  xlab(label='Watershed area (ln hectares)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Fungal ASVs observed")+
+  labs(title = "Fungal ASV richness by contributing watershed area")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+alpha_TWI <- ggplot(alpha, aes(x=TWI, y=Observed, colour=substrate)) +
+  facet_grid(. ~ substrate)+
+  #geom_boxplot()+
+  geom_point(aes(shape=WetDry)) +
+  xlab(label='Watershed area (ln hectares)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Fungal ASVs observed")+
+  labs(title = "Fungal ASV richness by contributing watershed area")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+alpha_TWI <- ggplot(alpha, aes(x=NO3_mgL, y=Observed, colour=substrate)) +
+  facet_grid(. ~ substrate)+
+  #geom_boxplot()+
+  geom_point(aes(shape=WetDry)) +
+  xlab(label='Watershed area (ln hectares)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Fungal ASVs observed")+
+  labs(title = "Fungal ASV richness by contributing watershed area")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+alpha_TWI <- ggplot(alpha_L, aes(x=OM_per_DM_Leaf, y=Observed, colour=Rip_type)) +
+  facet_grid(. ~ substrate)+
+  #geom_boxplot()+
+  geom_point(aes(shape=WetDry)) +
+  #xlab(label='Watershed area (ln hectares)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Fungal ASVs observed")+
+  labs(title = "Fungal ASV richness in litter by %OM")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+
+alpha_TWI <- ggplot(alpha, aes(x=stic_wet_prob, y=Shannon, colour=substrate)) +
+  facet_grid(. ~ substrate)+
+  #geom_boxplot()+
+  geom_point(aes(shape=WetDry)) +
+  geom_smooth(method = 'lm')+
+  ylab("Fungal ASVs observed")
+alpha_TWI
+
+alpha_TWI <- ggplot(alpha, aes(x=Rip_type, y=Observed, colour=substrate)) +
+  facet_grid(. ~ substrate)+
+  #geom_boxplot()+
+  geom_boxplot(aes(shape=WetDry)) +
+#  geom_smooth(method = 'lm')+
+  ylab("Fungal ASVs observed")
+alpha_TWI
+alpha_TWI <- ggplot(alpha, aes(x=WetDry, y=Observed, colour=substrate)) +
+  facet_grid(. ~ substrate)+
+  #geom_boxplot()+
+  geom_boxplot(aes(shape=WetDry)) +
+  geom_signif(comparisons = list(c("WET", "DRY")), y_position = 360,
+              map_signif_level=TRUE)+
+#  geom_smooth(method = 'lm')+
+  ylab("Fungal ASVs observed")
+alpha_TWI
+
+
+```
+
+
+
+
+AQUATIC HYPHOMYCETES
+Aquatic sapro-hyphomycete diversity!
+
+### make genus-level functional table for ASVs
+
+```{r}
+#setwd('/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs')
+
+#Create phyloseq object
+#read in files
+#asvtest <- read.csv("fungi_rarefied asv table_500.csv", row.names=1)
+taxtest_func <- as.data.frame(tax_table(pseqtest_L))
+#metatest_full <- read.csv("practice_metadata.csv", row.names=1)
+func_test <- read.csv("genus_traits.csv", header = T)
+
+library(stringr)
+#func_tab <- as_data_frame(taxtest$Genus)
+GENUS <- sapply(str_replace(taxtest_func$Genus, "g__", ""),`[`, 1)
+ASV<- row.names(taxtest_func)
+taxtest_func <- cbind(taxtest_func, GENUS) %>% cbind(ASV)
+View(taxtest_func)
+
+tax_trait_tab <- merge(taxtest_func, func_test, by="GENUS", all=F)
+row.names(tax_trait_tab) <- tax_trait_tab$ASV
+View(tax_trait_tab)
+
+write.csv(tax_trait_tab, "tax_trait_tab_L_may2023.csv")
+
+
+```
+
+
+
+## Phyloseq
+```{r}
+#setwd('/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs')
+
+#Create phyloseq object
+#read in files
+#asvtest <- read.csv("fungi_rarefied asv table_500.csv", row.names=1)
+#taxtest <- as.matrix(read.csv("fun_practice_taxonomy.csv", header = T, row.names=1))
+#traits <- read.csv("trait_tab.csv", header = T, row.names=1)
+#taxtest <- as.matrix(merge(taxtest,traits, by="row.names", all=F))
+#metatest_full <- read.csv("practice_metadata.csv", row.names=1)
+#taxtest <- read.csv("fun_practice_taxonomy.csv", header = T, row.names=1)
+#aquatax <- read.csv("aquatic_only_taxa.csv", header = T, row.names=1)
+trait_tab <- read.csv("trait_tab_L_may2023.csv", header = T,row.names=1)
+
+### remove non-aquatic
+#aquataxfilt <- taxtest[trait_tab$Aquatic_habitat_template!="non-aquatic",]
+#mergetax<- merge(taxtest_func,trait_tab,by="row.names")
+lit_taxa<-filter(trait_tab, primary_lifestyle=="litter_saprotroph"
+          |Secondary_lifestyle=="litter_saprotroph"
+          )
+
+##primary_lifestyle=="wood_saprotroph"||Secondary_lifestyle=="wood_saprotroph"
+#tax2<-filter(mergetax, Secondary_lifestyle=="litter_saprotroph")
+#lit_taxa<-rbind(tax1,tax2)
+lit_taxa<- lit_taxa[lit_taxa$Aquatic_habitat_template=="partly_freshwater_(partly_non-aquatic)"|lit_taxa$Aquatic_habitat_template=="freshwater"
+                    |lit_taxa$Aquatic_habitat_template=="partly_aquatic"|lit_taxa$Aquatic_habitat_template=="partly_marine_(partly_non-aquatic)"
+                    ,]
+
+#lit_taxa<- lit_taxa[lit_taxa$Aquatic_habitat_template!="non-aquatic",]
+#lit_taxa<- lit_taxa[lit_taxa$Aquatic_habitat_template!="partly_marine_(partly_non-aquatic)",]
+#lit_taxa<- lit_taxa[lit_taxa$Aquatic_habitat_template!="",]
+#lit_taxa<- lit_taxa[lit_taxa$Decay_type_template!="white_rot",]
+#lit_taxa<- lit_taxa[lit_taxa$primary_lifestyle!="animal_parasite",]
+#lit_taxa<- lit_taxa[lit_taxa$primary_lifestyle!="plant_pathogen",]
+#lit_taxa<- lit_taxa[lit_taxa$Growth_form_template!="yeast",]
+#lit_taxa<- lit_taxa[lit_taxa$Growth_form_template!="dimorphic_yeast",]
+
+	
+
+#lit_taxa<- lit_taxa[lit_taxa$Aquatic_habitat_template!="",]
+```
+
+```{r}
+
+###after extracting aquatic litter decomposers, we want to make a phyloseq with just these taxa in order to look at how drying effects the diversity of AQUATIC LITTER DECOMPOSERS
+write.csv(lit_taxa, "litter_alllit_taxa_may1423.csv")
+
+#### NOW, the table above contains a mixture of AHF, aero-aquatic fungi, standing-dead fungi, etc, and we want to get just AHF. I may come back to try and get tohse other groups, but for now gimme gimme gimme th AHF!
+
+lit_tax_tab<- read.csv("litter_facaq_may1423.csv", header = T,row.names=1)
+
+
+#row.names(lit_taxa)<-lit_taxa[,1]
+lit_tax_tab <- lit_tax_tab[,2:8]
+
+unique(lit_tax_tab$Genus)
+
+
+#aqtxfil <- aquataxfilt[which(trait_tab$primary_lifestyle=="litter_saprotroph"|trait_t#ab$Secondary_lifestyle=="litter_saprotroph"),]
+  #aquataxfilt[trait_tab$primary_lifestyle=="litter_saprotroph"|trait_tab$Secondary_lifestyle=="litter_saprotroph",]
+### list ASVs which are litter saptrotrophs
+#for (i in 1:nrow(trait_tab))
+ # if (trait_tab[i,3]=="litter_saprotroph" || trait_tab[i,4]=="litter_saprotroph")
+  #{littersap_rows[i]=trait_tab[i,1]}
+#littersap_rows<-littersap_rows[!is.na(littersap_rows)]
+
+#litlist1 <- trait_tab[trait_tab[,3]=="litter_saprotroph",]
+#litlist2 <- trait_tab[trait_tab[,4]=="litter_saprotroph",]
+#litlistfin<- litlist1$X 
+#litlistfin <-  append(litlistfin, litlist2$X )
+
+#littersap_rows <- littersap_rows[littersap_rows != FALSE]
+
+#aquataxfilt <- aquataxfilt[litlistfin,]
+#aquataxfilt <- as.matrix(aquataxfilt)
+##         hydration  depth
+## saltjb1       dry bottom
+## saltjb2       dry bottom
+## saltjt1       dry    top
+## saltjt2       dry    top
+## saltob2       wet bottom
+## saltot1       wet    top
+## saltot2       wet    top
+#designate file types
+#asvtest <- otu_table(asvtest, taxa_are_rows = FALSE)
+aqasvtest <- otu_table(pseqtest)
+lit_tax_tab <- as.matrix(lit_tax_tab)
+taxtestaq <- tax_table(lit_tax_tab)
+metatest <- sample_data(pseqtest)
+metatest_L <- metatest[metatest$substrate=="L",]
+#combine into phyloseq object
+pseqtestaq <- phyloseq(aqasvtest, taxtestaq, metatest_L)
+#extract easy-to-use sample data
+samdftestaq <- data.frame(sample_data(pseqtestaq))
+
+###Aquatic alpha diversity!
+#calculate alpha diversity
+
+aqualpha <- estimate_richness(pseqtestaq, split=TRUE, measures=NULL)
+row.names(aqualpha)<- row.names(samdftestaq)
+#%>% cbind(estimate_richness(pseqtestaq, split=TRUE, measures="Chao1")) %>% cbind(estimate_richness(pseqtestaq, split=TRUE, measures="Shannon")) %>% cbind(estimate_richness(pseqtestaq, split=TRUE, measures="InvSimpson"))
+#write.csv(alpha, "alpha diversity temp.csv") Chao1, Shannon, InvSimpson
+#alpha2 <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/alpha diversity.csv", stringsAsFactors=TRUE)
+aqualpha <- merge(samdftestaq, aqualpha, by= 'row.names', all=TRUE)
+#row.names(alpha) <- alpha$X 
+row.names(aqualpha)<- aqualpha[,1]
+aqualpha<- aqualpha[,-1]
+
+```
+
+
+
+
+
+
+pathalphabinding, cbind data on plant pathogens (Alternaria) which may inhibit colonization of stream hyphomycetes
+```{}
+### remove non-aquatic
+#aquataxfilt <- taxtest[trait_tab$Aquatic_habitat_template!="non-aquatic",]
+mergetax<- merge(taxtest,trait_tab,by="row.names")
+path_taxa<-filter(mergetax, primary_lifestyle=="plant_pathogen")
+                  #|Secondary_lifestyle=="litter_saprotroph")
+##primary_lifestyle=="wood_saprotroph"||Secondary_lifestyle=="wood_saprotroph"
+#tax2<-filter(mergetax, Secondary_lifestyle=="litter_saprotroph")
+#lit_taxa<-rbind(tax1,tax2)
+#path_taxa<- path_taxa[path_taxa$Aquatic_habitat_template=="partly_freshwater_(partly_non-aquatic)",]
+
+#lit_taxa<- lit_taxa[lit_taxa$Aquatic_habitat_template!="non-aquatic",]
+#lit_taxa<- lit_taxa[lit_taxa$Aquatic_habitat_template!="partly_marine_(partly_non-aquatic)",]
+#lit_taxa<- lit_taxa[lit_taxa$Aquatic_habitat_template!="",]
+#lit_taxa<- lit_taxa[lit_taxa$Decay_type_template!="white_rot",]
+#lit_taxa<- lit_taxa[lit_taxa$primary_lifestyle!="animal_parasite",]
+#lit_taxa<- lit_taxa[lit_taxa$primary_lifestyle!="plant_pathogen",]
+#lit_taxa<- lit_taxa[lit_taxa$Growth_form_template!="yeast",]
+#lit_taxa<- lit_taxa[lit_taxa$Growth_form_template!="dimorphic_yeast",]
+
+	
+
+#lit_taxa<- lit_taxa[lit_taxa$Aquatic_habitat_template!="",]
+row.names(path_taxa)<-path_taxa[,1]
+path_taxa <- path_taxa[,2:8]
+#aqtxfil <- aquataxfilt[which(trait_tab$primary_lifestyle=="litter_saprotroph"|trait_t#ab$Secondary_lifestyle=="litter_saprotroph"),]
+  #aquataxfilt[trait_tab$primary_lifestyle=="litter_saprotroph"|trait_tab$Secondary_lifestyle=="litter_saprotroph",]
+### list ASVs which are litter saptrotrophs
+#for (i in 1:nrow(trait_tab))
+ # if (trait_tab[i,3]=="litter_saprotroph" || trait_tab[i,4]=="litter_saprotroph")
+  #{littersap_rows[i]=trait_tab[i,1]}
+#littersap_rows<-littersap_rows[!is.na(littersap_rows)]
+
+#litlist1 <- trait_tab[trait_tab[,3]=="litter_saprotroph",]
+#litlist2 <- trait_tab[trait_tab[,4]=="litter_saprotroph",]
+#litlistfin<- litlist1$X 
+#litlistfin <-  append(litlistfin, litlist2$X )
+
+#littersap_rows <- littersap_rows[littersap_rows != FALSE]
+
+#aquataxfilt <- aquataxfilt[litlistfin,]
+#aquataxfilt <- as.matrix(aquataxfilt)
+##         hydration  depth
+## saltjb1       dry bottom
+## saltjb2       dry bottom
+## saltjt1       dry    top
+## saltjt2       dry    top
+## saltob2       wet bottom
+## saltot1       wet    top
+## saltot2       wet    top
+#designate file types
+asvtest <- otu_table(asvtest, taxa_are_rows = FALSE)
+path_taxa <- as.matrix(path_taxa)
+path_taxaaq <- tax_table(path_taxa)
+metatest <- sample_data(metatest_full)
+#combine into phyloseq object
+path_taxapseqtestaq <- phyloseq(asvtest, path_taxaaq, metatest)
+#extract easy-to-use sample data
+path_taxasamdftestaq <- data.frame(sample_data(path_taxapseqtestaq))
+
+###Aquatic alpha diversity!
+#calculate alpha diversity
+
+path_taxaalpha <- estimate_richness(path_taxapseqtestaq, split=TRUE, measures="Observed") %>% cbind(estimate_richness(path_taxapseqtestaq, split=TRUE, measures="Chao1")) %>% cbind(estimate_richness(path_taxapseqtestaq, split=TRUE, measures="Shannon")) %>% cbind(estimate_richness(path_taxapseqtestaq, split=TRUE, measures="InvSimpson"))
+#write.csv(alpha, "alpha diversity temp.csv") Chao1, Shannon, InvSimpson
+#alpha2 <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/alpha diversity.csv", stringsAsFactors=TRUE)
+#aqualpha <- merge(samdftestaq, path_taxa, by= 'row.names', all=TRUE)
+#row.names(alpha) <- alpha$X 
+#aqualpha
+```
+
+```{r}
+man1 <- manova(cbind(Observed, Chao1, Shannon) ~ stic_wet_prob, data=aqualpha)
+hist(man1$residuals)
+plot(man1$residuals ~ man1$fitted.values)
+summary.aov(man1)
+man2 <- manova(cbind(Observed, Chao1, Shannon) ~ WetDry, data=aqualpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+man2 <- manova(cbind(Observed, Chao1, Shannon) ~ stic_wet_prob*Graminales, data=aqualpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+man2 <- manova(cbind(Observed, Chao1, Shannon) ~ stic_wet_prob*lnContribWSha, data=aqualpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+man3 <- manova(cbind(Observed, Chao1, Shannon) ~ TWI*substrate, data=aqualpha)
+hist(man3$residuals)
+plot(man3$residuals ~ man3$fitted.values)
+summary.aov(man3)
+man2 <- manova(cbind(Observed, Chao1, Shannon) ~ WetDry*substrate, data=aqualpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+man5 <- manova(cbind(Observed, Chao1, Shannon) ~ lnContribWSha*substrate, data=aqualpha)
+hist(man5$residuals)
+plot(man5$residuals ~ man5$fitted.values)
+summary.aov(man5)
+```
+
+```{r}
+
+man2 <- manova(cbind(Observed, Chao1, Shannon) ~ stic_wet_prob*Graminales, data=aqualpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+
+aqualpha_plot002 <- ggplot(aqualpha, aes(x=WetDry, y=Shannon)) +
+ # facet_grid(. ~ substrate, labeller = sub_labeller)+
+  geom_boxplot(fill="#7CAE00") +
+    geom_signif(comparisons = list(c("WET", "DRY")), 
+              map_signif_level=TRUE)+
+#  geom_boxplot_pattern(aes(pattern = WetDry), outlier.shape = NA, show.legend = FALSE) +
+ # scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("ASVs Observed and Identified as Litter Saprotrophs")+
+
+  labs(title = "Shannon diversity of Freshwater Litter Saprotrophs in Leaf Litter")
+#  scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+ # aes(fill=aqualpha$substrate, show.legend=FALSE)
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+aqualpha_plot002
+
+aqualpha_plot002 <- ggplot(aqualpha, aes(x=WetDry, y=Shannon)) +
+ # facet_grid(. ~ substrate, labeller = sub_labeller)+
+  geom_boxplot(fill="#7CAE00") +
+    geom_signif(comparisons = list(c("WET", "DRY")), 
+              map_signif_level=TRUE)+
+#  geom_boxplot_pattern(aes(pattern = WetDry), outlier.shape = NA, show.legend = FALSE) +
+ # scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("ASVs Observed and Identified as Litter Saprotrophs")+
+
+  labs(title = "Shannon diversity of Freshwater Litter Saprotrophs in Leaf Litter")
+#  scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+ # aes(fill=aqualpha$substrate, show.legend=FALSE)
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+aqualpha_plot002
+
+
+alpha_TWI <- ggplot(aqualpha, aes(x=stic_wet_prob, y=Shannon))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+  facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='STIC Wet Probability')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Shannon diversity of AHF ASVs")+
+  labs(title = "Shannon diversity of AHF in Leaf Litter over flow permanence gradient")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+```
+
+
+```{}
+
+aqualpha$substrate <- as.factor(aqualpha$substrate)
+
+aqualpha_plot001 <- ggplot(aqualpha, aes(x=substrate, y=Observed)) +
+  geom_boxplot(aes(fill=aqualpha$substrate), show.legend = FALSE) + 
+  #scale_fill_grey(start=0.9, end=0.35) +
+  ylab("ASVs Observed")+
+  geom_signif(comparisons = split(t(combn(levels(aqualpha$substrate), 2)), seq(nrow(t(combn(levels(aqualpha$substrate), 2))))), map_signif_level = TRUE, step_increase=0.15)+
+#scale_x_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment'))+
+  labs(title = "Taxon (ASV) richness by substrate")+
+  theme(axis.text.x = element_text(angle=30, hjust=0.6))+
+  theme(text=element_text(size=20), #change font size of all text
+        axis.text=element_text(size=11), #change font size of axis text
+        axis.title=element_text(size=11), #change font size of axis titles
+        plot.title=element_text(size=11), #change font size of plot title
+        legend.text=element_text(size=11), #change font size of legend text
+        legend.title=element_text(size=11)) #change font size of legend title  
+aqualpha_plot001
+#cor.test(alpha$substrate)
+
+
+sublablist<- c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment')
+sub_labeller <- function(variable,value){
+  return(sublablist[value])
+}
+library("ggpattern") 
+myColors <- c("#00BFC4", "#F8766D","#7CAE00")
+names(myColors) <- levels(aqualpha$substrate)
+custom_colors <- scale_colour_manual(name = aqualpha$substrate, values = myColors)
+df <- data.frame(level = levels(aqualpha$substrate), outcome = c("#00BFC4", "#F8766D","#7CAE00"))
+
+aqualpha_plot002 <- ggplot(aqualpha, aes(x=WetDry, y=Observed)) +
+  geom_boxplot() +
+  geom_signif(comparisons = list(c("WET", "DRY")), 
+              map_signif_level=TRUE)+
+  facet_grid(. ~ substrate)+
+             #labeller = sub_labeller)+
+  #geom_boxplot_pattern(aes(pattern = WetDry), outlier.shape = NA, show.legend = FALSE) +
+ # scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("ASVs Observed")+
+ # aes(fill=aqualpha$substrate)+
+  labs(title = "Taxon (ASV) richness in Wet versus Dry sites, by substrate")
+ # scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+ # aes(fill=aqualpha$substrate)
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+aqualpha_plot002
+
+
+litter_alpha <- aqualpha[aqualpha$substrate=='L',]
+
+aqualpha_plot002 <- ggplot(litter_alpha, aes(x=WetDry, y=Observed)) +
+ # facet_grid(. ~ substrate, labeller = sub_labeller)+
+  geom_boxplot(fill="#7CAE00") +
+    geom_signif(comparisons = list(c("WET", "DRY")), 
+              map_signif_level=TRUE)+
+#  geom_boxplot_pattern(aes(pattern = WetDry), outlier.shape = NA, show.legend = FALSE) +
+ # scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("ASVs Observed and Identified as Litter Saprotrophs")+
+
+  labs(title = "Taxon (ASV) richness of Litter Saprotrophs on Leaf Litter in Wet versus Dry sites")
+#  scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+ # aes(fill=aqualpha$substrate, show.legend=FALSE)
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+aqualpha_plot002
+
+aqualpha_plot002 <- ggplot(aqualpha, aes(x=aqualpha$lnContribWSha, y=Observed)) +
+ # facet_grid(. ~ substrate, labeller = sub_labeller)+
+  
+  geom_smooth(method='lm')+
+  geom_point()
+  #  geom_signif(comparisons = list(c("WET", "DRY")), 
+ #             map_signif_level=TRUE)+
+#  geom_boxplot_pattern(aes(pattern = WetDry), outlier.shape = NA, show.legend = FALSE) +
+ # scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+ # ylab("ASVs Observed and Identified as Litter Saprotrophs")+
+
+ # labs(title = "Taxon (ASV) richness of Litter Saprotrophs on Leaf Litter in Wet versus Dry sites")
+#  scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+ # aes(fill=aqualpha$substrate, show.legend=FALSE)
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+aqualpha_plot002
+
+litter_alpha <- aqualpha[aqualpha$substrate=='L',]
+#litter_alpha <- litter_alpha %>% mutate(obs_norm = Observed/logDNAleaf)
+#litter_alpha <- litter_alpha %>% mutate(obs_norm = Observed/lDNA_uggleaftissue)
+#litter_alpha <- litter_alpha[litter_alpha$obs_norm<35,]
+#norm_obs <- as_data_frame(litter_alpha$Observed/litter_alpha$logDNAleaf)
+#row.names(norm_obs) <- row.names(litter_alpha)
+#litter_alpha <- cbind(litter_alpha,as_data_frame(norm_obs))
+#litter_alpha$Observed <- norm_obs
+aqualpha_plot004 <- ggplot(litter_alpha, aes(x=lnContribWSha, y=Observed)) +
+ # facet_grid(. ~ substrate, labeller = sub_labeller)+
+  
+  geom_smooth(method='lm')+
+  geom_point(aes(colour=litter_alpha$WetDry))
+  
+aqualpha_plot004
+
+aqualpha_plot004 <- ggplot(litter_alpha, aes(x=stic_wet_prob, y=Observed)) +
+ # facet_grid(. ~ substrate, labeller = sub_labeller)+
+  
+  geom_smooth(method='lm')+
+  geom_point(aes(colour=litter_alpha$WetDry))
+  
+aqualpha_plot004
+
+aqualpha_plot005 <- ggplot(litter_alpha, aes(x=TWI, y=Observed, label=Site)) +
+ # facet_grid(. ~ substrate, labeller = sub_labeller)+
+  
+  geom_smooth(method='lm')+
+  geom_point(aes(colour=litter_alpha$WetDry))+
+  geom_text()
+  
+aqualpha_plot005
+```
+
+
+
+Leotio_wetdry <- ggplot(rock_merge, aes(x=WetDry, y=f__Verrucariaceae, fill=WetDry)) +
+  #facet_grid(. ~ substrate, labeller = sub_labeller)+
+  scale_x_discrete(labels=c('WET'='Wet', 'DRY'='Dry'))+
+  geom_boxplot() +
+  geom_boxplot_pattern(aes(pattern = WetDry), outlier.shape = NA, show.legend = FALSE) +
+  scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("Relative Abundance (% ASV reads)")+
+  geom_signif(comparisons = list(c("WET", "DRY")), y_position = 58,
+              map_signif_level=TRUE)+
+  labs(title = "Verrucariaceae relative abundance in epilithon")+
+ # scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment'))+
+  #aes(fill=alpha$substrate, show.legend=FALSE)+
+  theme(legend.position='none',axis.text.x = element_text(size=14), axis.title.x = element_blank(),strip.text.x = element_text(size = 11))
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+Leotio_wetdry
+#taxmerge$Biofilm_Chl.a_.ug.cm2.
+
+alpha_TWI <- ggplot(taxmerge_S, aes(x=stic_wet_prob, y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='STIC Wet Probability')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Relative Abundance (% ASV reads)")+
+  labs(title = "Relative abundance of Mortierellomycota")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+alpha_TWI <- ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='STIC Wet Probability')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Relative Abundance (% ASV reads)")+
+  labs(title = "Relative abundance of Mortierellomycota")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+cor_Mort_wet<-cor.test(rock_merge$stic_wet_prob, rock_merge$f__Verrucariaceae, method = "pearson")
+cor_Mort_wet
+wilcox.test(rock_merge$f__Verrucariaceae~rock_merge$WetDry)
+
+hyphomycete read relabun
+```{r}
+aqhypcount<-rowSums(pseqtestaq@otu_table)/rowSums(pseqtest_L@otu_table)
+
+aqualpha<- cbind(aqualpha, aqhypcount)
+litter_alpha <- aqualpha[aqualpha$substrate=='L',]
+summary(100*litter_alpha$aqhypcount)  
+aqualpha$substrate <- as.factor(aqualpha$substrate)
+
+aqualpha_plot001 <- ggplot(aqualpha, aes(x=substrate, y=Observed)) +
+  geom_boxplot(aes(fill=aqualpha$substrate), show.legend = FALSE) + 
+  #scale_fill_grey(start=0.9, end=0.35) +
+  ylab("Observed ASVs IDed as Aquatic Hyphomycetes")+
+  geom_signif(comparisons = split(t(combn(levels(aqualpha$substrate), 2)), seq(nrow(t(combn(levels(aqualpha$substrate), 2))))), map_signif_level = TRUE, step_increase=0.15)+
+scale_x_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+  labs(title = "Taxon (ASV) richness of Aquatic Hyphomycetes")+
+  theme(axis.text.x = element_text(angle=30, hjust=0.6))
+#  theme(text=element_text(size=20), #change font size of all text
+#        axis.text=element_text(size=11), #change font size of axis text
+#        axis.title=element_text(size=11), #change font size of axis titles
+ #       plot.title=element_text(size=11), #change font size of plot title
+  #      legend.text=element_text(size=11), #change font size of legend text
+   #     legend.title=element_text(size=11)) #change font size of legend title  
+aqualpha_plot001
+#cor.test(alpha$substrate)
+
+
+aqualpha_plot002 <- ggplot(aqualpha, aes(x=WetDry, y=aqhypcount)) +
+  geom_boxplot() +
+  geom_signif(comparisons = list(c("WET", "DRY")), 
+              map_signif_level=TRUE)+
+  facet_grid(. ~ substrate)+
+             #labeller = sub_labeller)+
+  #geom_boxplot_pattern(aes(pattern = WetDry), outlier.shape = NA, show.legend = FALSE) +
+ # scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("ASVs Observed")+
+ # aes(fill=aqualpha$substrate)+
+  labs(title = "Taxon (ASV) richness in Wet versus Dry sites, by substrate")
+ # scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+ # aes(fill=aqualpha$substrate)
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+aqualpha_plot002
+
+
+litter_alpha <- aqualpha[aqualpha$substrate=='L',]
+litter_alpha$WetDry <- factor(litter_alpha$WetDry, levels= c("WET","DRY"))
+aqualpha_plot002 <- ggplot(litter_alpha, aes(x=WetDry, y=aqhypcount)) +
+ # facet_grid(. ~ substrate, labeller = sub_labeller)+
+  geom_boxplot(fill="#7CAE00", outlier.shape=NA) +
+    geom_signif(comparisons = list(c("WET", "DRY")), 
+              map_signif_level=TRUE)+
+# geom_boxplot_pattern(aes(pattern = WetDry), outlier.shape = NA, show.legend = FALSE) +
+ # scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("Percentage of Reads IDed as Aquatic Hyphomycetes")+
+
+  labs(title = "Relative Abundance of Aquatic Hyphomycetes")+
+  scale_y_continuous(labels = scales::percent)+
+  #ylim(0,0.76)+
+  geom_jitter()
+#  scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+ # aes(fill=aqualpha$substrate, show.legend=FALSE)
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+aqualpha_plot002
+litter_alpha$WetDry <- factor(litter_alpha$WetDry, levels= c("WET","DRY"))
+myColors <- c("#7CAE00")
+aqualpha_plot002 <- ggplot(litter_alpha, aes(x=WetDry, y=Observed)) +
+ # facet_grid(. ~ substrate, labeller = sub_labeller)+
+  geom_boxplot(fill="#7CAE00") +
+  #geom_boxplot_pattern(aes(pattern = WetDry,), outlier.shape = NA, show.legend = FALSE) +
+  #scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+#  geom_boxplot_pattern(aes(pattern = WetDry), outlier.shape = NA, show.legend = FALSE) +
+ # scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("Observed ASVs IDed as Aquatic Hyphomycetes")+
+  geom_signif(comparisons = list(c("WET", "DRY")), 
+              map_signif_level=TRUE)+
+  scale_fill_manual("#7CAE00")+ 
+#aes(fill=myColors, show.legend=FALSE)+
+  labs(title = "Taxon (ASV) richness of Aquatic Hyphomycetes")
+#  scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+ # aes(fill=aqualpha$substrate, show.legend=FALSE)
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+aqualpha_plot002
+
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=lnContribWSha, y=aqhypcount))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='STIC Wet Probability')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Shannon diversity of AHF ASVs")+
+  labs(title = "Relative abundance of AHF in Leaf Litter over flow permanence gradient")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+cor_afchlha<-cor.test(litter_alpha$TWI, litter_alpha$aqhypcount, method = "spearman")
+cor_afchlha
+
+cor_afchlha<-cor.test(litter_alpha$lnContribWSha, litter_alpha$aqhypcount, method = "spearman")
+cor_afchlha
+
+cor_afchlha<-cor.test(litter_alpha$lnContribWSha, litter_alpha$Observed, method = "spearman")
+cor_afchlha
+
+
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=TWI, y=aqhypcount))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='STIC Wet Probability')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Shannon diversity of AHF ASVs")+
+  labs(title = "Relative abundance of AHF in Leaf Litter over TWI")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+cor_afchlha<-cor.test(litter_alpha$TWI, litter_alpha$aqhypcount, method = "spearman")
+cor_afchlha
+
+
+man2 <- manova(cbind(Observed, Chao1, Shannon, aqhypcount) ~ stic_wet_prob*Graminales, data=litter_alpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+man2 <- manova(cbind(Observed, Chao1, Shannon, aqhypcount) ~ stic_wet_prob, data=litter_alpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+
+litter_alpha <- aqualpha[aqualpha$substrate=='L',]
+litter_alpha$Biofilm_Chl.a_.ug.cm2.<- log((litter_alpha$Biofilm_Chl.a_.ug.cm2.)+1)
+
+
+man2 <- manova(cbind(Observed, Chao1, Shannon, aqhypcount) ~ stic_wet_prob*Graminales, data=litter_alpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+
+man2 <- manova(cbind(Observed, Chao1, Shannon, aqhypcount) ~ stic_wet_prob*, data=litter_alpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+
+man2 <- manova(cbind(Observed, Chao1, Shannon, aqhypcount) ~ TWI, data=litter_alpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+
+
+man2 <- manova(cbind(Observed, Chao1, Shannon, aqhypcount) ~ stic_wet_prob*Graminales, data=litter_alpha)
+hist(man2$residuals)
+plot(man2$residuals ~ man2$fitted.values)
+summary.aov(man2)
+
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=lnContribWSha, y=Shannon))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='Epilithic Chl-a (ug/cm^2, log-transformed)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Observed ASVs assigned as AHF")+
+  labs(title = "ASV richness of AHF in Leaf Litter over flow permanence gradient")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+cor_afchlha<-cor.test(litter_alpha$Biofilm_Chl.a_.ug.cm2., litter_alpha$Observed, method = "spearman")
+cor_afchlha
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=TWI, y=aqhypcount))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='Epilithic Chl-a (ug/cm^2, log-transformed)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Observed ASVs assigned as AHF")+
+  labs(title = "ASV richness of AHF in Leaf Litter over flow permanence gradient")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+litter_alpha$Graminales <- as.factor(aqualpha$Graminales)
+
+aqualpha_plot002 <- ggplot(litter_alpha, aes(x=lnCon, y=Shannon)) +
+  geom_boxplot() +
+  geom_signif(comparisons = list(c("1", "0")), 
+              map_signif_level=TRUE)+
+  #facet_grid(. ~ substrate)+
+             #labeller = sub_labeller)+
+  #geom_boxplot_pattern(aes(pattern = WetDry), outlier.shape = NA, show.legend = FALSE) +
+ # scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("Shannon diversity of AHF ASVs")+
+  xlab("Graminaceous litter in sample?")+
+ # aes(fill=aqualpha$substrate)+
+  labs(title = "Graminaceous litter effect on AHF diversity")
+ # scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+ # aes(fill=aqualpha$substrate)
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+aqualpha_plot002
+
+```
+adonis2(braytest_L ~ TWI, data = samdftest_L)
+adonis2(braytest_L ~ Strahler, data = samdftest_L)
+adonis2(braytest_L ~ TWI*Biofilm_Chl.a_.ug.cm2., data = samdftest_L)
+adonis2(braytest_L ~ Biofilm_Chl.a_.ug.cm2., data = samdftest_L)
+adonis2(braytest_L ~ Strahler*Rip_type, data = samdftest_L)
+adonis2(braytest_L ~ Watershed_LTER*Rip_type, data = samdftest_L)
+
+adonis2(braytest_L ~ stic_wet_prob*CanopyCoverPct, data = samdftest_L)
+adonis2(braytest_L ~ TWI*Graminales, data = samdftest_L)
+###
+adonis2(braytest_L ~ Rip_type*WetDry, data = samdftest_L)
+adonis2(braytest_L ~ lnContribWSha, data = samdftest_L)
+adonis2(braytest_L ~ Graminales, data = samdftest_L)
+adonis2(braytest_L ~ Rip_type, data = samdftest_L)
+look for relation between stream hyphomycetes versus plant pathogens
+
+
+AHF TESTS FOR PRES:
+
+```{r}
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=TWI, y=aqhypcount))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='Topographic Wetness Index (TWI)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("% Abundance of AHF ASVs")+
+  labs(title = "Percent abundance of AHF in Leaf Litter over TWI gradient")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+cor_afchlha<-cor.test(litter_alpha$TWI, litter_alpha$aqhypcount, method = "spearman")
+cor_afchlha
+cor_afchlha<-cor.test(litter_alpha$lnContribWSha, litter_alpha$aqhypcount, method = "spearman")
+cor_afchlha
+cor_afchlha<-cor.test(litter_alpha$Elevation_m, litter_alpha$aqhypcount, method = "spearman")
+cor_afchlha
+cor_afchlha<-cor.test(litter_alpha$Slope_prc, litter_alpha$aqhypcount, method = "spearman")
+cor_afchlha
+cor_afchlha<-cor.test(litter_alpha$lnContribWSha, litter_alpha$Observed, method = "spearman")
+cor_afchlha
+cor_afchlha<-cor.test(litter_alpha$lnContribWSha, litter_alpha$Shannon, method = "spearman")
+cor_afchlha
+
+cor_afchlha<-cor.test(litter_alpha$Elevation_m, litter_alpha$Shannon, method = "spearman")
+cor_afchlha
+
+
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=lnContribWSha, y=Shannon))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='Contributing watershed area (ln hectares)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Shannon diversity of AHF ASVs")+
+  labs(title = "AHF diversity over wateshed area")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+cor_afchlha<-cor.test(litter_alpha$TWI, litter_alpha$Observed, method = "spearman")
+cor_afchlha
+
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=TWI, y=Shannon))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='STIC Wet Probability')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("Shannon diversity of AHF ASVs")+
+  labs(title = "Relative abundance of AHF in Leaf Litter over TWI")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+cor_afchlha<-cor.test(litter_alpha$TWI, litter_alpha$aqhypcount, method = "spearman")
+cor_afchlha
+
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=TWI, y=aqhypcount))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='Topographic Wetness Index (TWI)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("% Abundance of AHF ASVs")+
+  labs(title = "Percent abundance of AHF in Leaf Litter over TWI gradient")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=lnContribWSha, y=aqhypcount))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='Contributing watershed area (ln hectares)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("% Abundance of AHF ASVs")+
+  labs(title = "AHF relative abundance over watershed area")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+cor_afchlha<-cor.test(litter_alpha$lnContribWSha, litter_alpha$aqhypcount, method = "spearman")
+cor_afchlha
+cor_afchlha<-cor.test(litter_alpha$TWI, litter_alpha$aqhypcount, method = "spearman")
+cor_afchlha
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=, y=aqhypcount))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  xlab(label='Topographic Wetness Index (TWI)')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  ylab("% Abundance of AHF ASVs")+
+  labs(title = "Percent abundance of AHF in Leaf Litter over TWI gradient")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+```
+
+AHF and EEA, first relabun then diversity
+
+```{r}
+cor_ahfeea<-cor.test(litter_alpha$B.Gluc.Activity..umol.h.g.DW.Leaf., litter_alpha$aqhypcount, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$B.Gluc.Activity..umol.h.g.OM.Leaf., litter_alpha$aqhypcount, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Phosphatase.Activity..umol.h.g.DW.Leaf., litter_alpha$aqhypcount, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Phosphatase.Activity..umol.h.g.OM.Leaf., litter_alpha$aqhypcount, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$NAGase.Activity..umol.h.g.DW.Leaf., litter_alpha$aqhypcount, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$NAGase.Activity..umol.h.g.OM.Leaf., litter_alpha$aqhypcount, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Phenol.Oxidase.Activity..umol.h.g.DW.Leaf., litter_alpha$aqhypcount, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Phenol.Oxidase.Activity..umol.h.g.OM.Leaf., litter_alpha$aqhypcount, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Peroxidase.Activity..umol.h.g.DW.Leaf., litter_alpha$aqhypcount, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Peroxidase.Activity..umol.h.g.OM.Leaf., litter_alpha$aqhypcount, method = "spearman")
+cor_ahfeea
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=aqhypcount, y=B.Gluc.Activity..umol.h.g.OM.Leaf.))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  ylab(label='β-glucosidase µmol/h per g OM')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  xlab("% Abundance of AHF ASVs")+
+  labs(title = "β-glucosidase expression over AHF % abundance")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=aqhypcount, y=Phenol.Oxidase.Activity..umol.h.g.OM.Leaf.))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  ylab(label='Phenol oxidase µmol/h per g OM')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  xlab("% Abundance of AHF ASVs")+
+  labs(title = "Phenol oxidase expression over AHF % abundance")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+
+```
+
+AHF richness by eea
+
+```{r}
+cor_ahfeea<-cor.test(litter_alpha$B.Gluc.Activity..umol.h.g.DW.Leaf., litter_alpha$Shannon, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$B.Gluc.Activity..umol.h.g.OM.Leaf., litter_alpha$Shannon, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Phosphatase.Activity..umol.h.g.DW.Leaf., litter_alpha$Shannon, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Phosphatase.Activity..umol.h.g.OM.Leaf., litter_alpha$Shannon, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$NAGase.Activity..umol.h.g.DW.Leaf., litter_alpha$Shannon, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$NAGase.Activity..umol.h.g.OM.Leaf., litter_alpha$Shannon, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Phenol.Oxidase.Activity..umol.h.g.DW.Leaf., litter_alpha$Shannon, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Phenol.Oxidase.Activity..umol.h.g.OM.Leaf., litter_alpha$Shannon, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Peroxidase.Activity..umol.h.g.DW.Leaf., litter_alpha$Shannon, method = "spearman")
+cor_ahfeea
+
+cor_ahfeea<-cor.test(litter_alpha$Peroxidase.Activity..umol.h.g.OM.Leaf., litter_alpha$Shannon, method = "spearman")
+cor_ahfeea
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=Observed, y=B.Gluc.Activity..umol.h.g.OM.Leaf.))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  ylab(label='β-glucosidase µmol/h per g OM')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  xlab("% Abundance of AHF ASVs")+
+  labs(title = "β-glucosidase expression over AHF % abundance")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+alpha_TWI <- ggplot(litter_alpha, aes(x=Observed, y=Phosphatase.Activity..umol.h.g.OM.Leaf.))+
+  #ggplot(taxmerge_S, aes(x=Biofilm_Chl.a_.ug.cm2., y=p__Mortierellomycota)) +
+ # facet_grid(. ~ Graminales)+
+  #geom_boxplot()+
+  geom_point() +
+  ylab(label='Phenol oxidase µmol/h per g OM')+
+  geom_smooth(method = 'lm', se = FALSE, linetype="dashed", color="black")+
+  xlab("% Abundance of AHF ASVs")+
+  labs(title = "Phenol oxidase expression over AHF % abundance")
+  #annotate("text", x = -0.25, y = 0.42, label = "cor.test", size=3.5)
+alpha_TWI
+
+
+```
+
+
+
+
+AHF BETA
+
+
+## BETA DIVERSITY
+```{r}
+#generate distance matrices
+
+ahfotu <- pseqtestaq@otu_table[rowSums(pseqtestaq@otu_table)>0,]
+
+
+#aqasvtest <- otu_table(pseqtest)
+#lit_tax_tab <- as.matrix(lit_tax_tab)
+#taxtestaq <- tax_table(lit_tax_tab)
+#metatest <- sample_data(pseqtest)
+#metatest_L <- metatest[metatest$substrate=="L",]
+#combine into phyloseq object
+pAHFbeta <- phyloseq(ahfotu, taxtestaq, metatest_L)
+#extract easy-to-use sample data
+samdftestahfb <- data.frame(sample_data(pAHFbeta))
+
+braytest <- phyloseq::distance(pAHFbeta, method = "bray")
+#jactest <- phyloseq::distance(pseqtest, method="jaccard", binary=TRUE)
+```
+
+```{r}
+#perform NMDS
+#Bray-Curtis
+braymds <- metaMDS(braytest, k=2, trymax=500, wascores = T)
+## Warning in metaMDS(braytest, k = 2, trymax = 500, wascores = T): stress is
+## (nearly) zero: you may have insufficient data
+brayscores <- scores(braymds)
+#Jaccard
+#jacmds <- metaMDS(jactest, k=2, trymax=500, wascores = T)
+#jacscores <- scores(jacmds)
+braymds
+```
+
+```{r}
+nmdsp3 <- plot_ordination(pAHFbeta, braymds, type="samples", color="FlowStag", shape="Rip_type")+
+  geom_point(size=2)
+nmdsp3
+
+WetDry=samdftest$WetDry
+
+nmds3plus<- plot_ordination(pAHFbeta, braymds, type="samples", color="FlowStag", shape="Rip_type")+
+  geom_point(size=2)+
+#  scale_color_discrete(labels=c('Epilithic biofilms', 'Leaf litter', 'Benthic sediment', 'Surface water'))+
+  stat_ellipse(
+    #inherit.aes = FALSE, 
+               aes(x=brayscores[,1],y=brayscores[,2]
+                                        #,linetype=(samdftest$WetDry)
+                                        ))+
+ # aes(linetype=(samdftest$WetDry))+
+#  scale_linetype_manual(values=c("dashed","solid"), name="Wet/Dry ellipse")+
+ # scale_shape(name="Wet/Dry sample")+
+  labs(title = "NMDS of fungal community composition by substrate")+
+  annotate("text", x = 0.3, y = 0.42, label = sprintf("k=2, Stress=%.4f",braymds$stress), size=3.5)+
+ # theme(legend.text = element_text(size=10))+
+    theme(text=element_text(size=18), #change font size of all text
+        axis.text=element_text(size=16), #change font size of axis text
+        axis.title=element_text(size=16), #change font size of axis titles
+        plot.title=element_text(size=16), #change font size of plot title
+        legend.text=element_text(size=14), #change font size of legend text
+        strip.text.x = element_text(size = 16),
+        legend.title=element_text(size=16)) #change font size of legend title  
+
+nmds3plus
+
+```
+
+
+
+```{r}
+#PERMANOVA
+names(samdftesahfbt)
+adonis2(braytest ~ stic_wet_prob, data = samdftestahfb)
+
+adonis2(braytest ~ WetDry, data = samdftestahfb)
+
+adonis2(braytest ~ Rip_type, data = samdftestahfb)
+
+adonis2(braytest ~ Graminales, data = samdftestahfb)
+
+adonis2(braytest ~ TWI, data = samdftestahfb)
+
+adonis2(braytest ~ lnContribWSha, data = samdftestahfb)
+
+adonis2(braytest ~ substrate*WetDry, data = samdftest)
+adonis2(braytest ~ substrate*Strahler, data = samdftest)
+adonis2(braytest ~ substrate*Shreve, data = samdftest)
+adonis2(braytest ~ substrate*stic_wet_prob, data = samdftest)
+adonis2(braytest ~ substrate*Graminales, data = samdftest)
+adonis2(braytest ~ Rip_type*substrate, data = samdftest)
+
+adonis2(braytest ~ substrate*lnContribWSha, data = samdftest)
+
+adonis2(braytest ~ WetDry, data = samdftest, by=NULL)
+
+adonis2(braytest ~ substrate*WetDry, data = samdftest)
+adonis2(braytest ~ WetDry*substrate, data = samdftest)
+
+anosim(braytest, samdftest$substrate)
+anosim(braytest, samdftest$substrate, strata = samdftest$WetDry)
+anosim(braytest, samdftest$WetDry, strata = samdftest$substrate)
+anosim(braytest, samdftest$Rip_type, strata = samdftest$substrate)
+
+#adonis2(jactest ~ Watershed*substrate, data = samdftest)
+#adonis2(jactest ~ substrate*TWI, data = samdftest)
+#adonis2(jactest ~ TWI*WetDry, data = samdftest)
+#adonis2(jactest ~ WetDry*substrate, data = samdftest)
+
+
+
+```
+
+
+##give me top 10 genera of family from each sample type
+```{r}
+
+# Merges ASVs that have the same taxonomy rank (Genus)
+gp = tax_glom(pseqtestaq, taxrank = "Genus")
+#gp = tax_glom(pseqtest, taxrank = "Family")
+
+# Calculate relative abundance
+gp = transform_sample_counts(gp, function(x) {x/sum(x)} )
+#dummy check, rowsums = 100%
+head(rowSums(gp@otu_table))
+##  1 1 1 1 1 1
+
+# Define group/condition type
+type = levels(sample_data(gp)$WetDry)[1] # Biofilm
+
+# Retrieve sample name of the defined type
+sn = sample_names(sample_data(gp)[sample_data(gp)$WetDry == type,])
+
+# Calculate taxa sum of the selected samples
+top10B = head(sort(colSums(otu_table(gp)[sn,]), decreasing = TRUE), 10)
+
+top10B
+# Combine count and taxonomyTable
+top10B = cbind(as.data.frame(tax_table(gp)[names(top10B),]), Frac = top10B)
+top10B
+
+
+## leaf
+# Define group/condition type
+type = levels(sample_data(gp)$substrate)[2] # Leaf
+# Retrieve sample name of the defined type
+sn = sample_names(sample_data(gp)[sample_data(gp)$substrate == type,])
+
+# Calculate taxa sum of the selected samples
+top10L = head(sort(colSums(otu_table(gp)[sn,]), decreasing = TRUE), 10)
+
+top10L
+# Combine count and taxonomyTable
+top10L = cbind(as.data.frame(tax_table(gp)[names(top10L),]), Frac = top10L)
+top10L
+
+## sediment
+# Define group/condition type
+type = levels(sample_data(gp)$substrate)[3] # Leaf
+# Retrieve sample name of the defined type
+sn = sample_names(sample_data(gp)[sample_data(gp)$substrate == type,])
+
+# Calculate taxa sum of the selected samples
+top10S = head(sort(colSums(otu_table(gp)[sn,]), decreasing = TRUE), 10)
+
+top10S
+# Combine count and taxonomyTable
+top10S = cbind(as.data.frame(tax_table(gp)[names(top10S),]), Frac = top10S)
+top10S
+
+
+
+```
+
+```{r}
+top10L$Type = type
+# Plot
+top_leaf_bar<- ggplot(top10L, aes(Type,  Frac, fill = Genus)) + 
+  geom_col(color = "black", size = 1) +
+        #scale_y_continuous(breaks = seq(0, 1, 0.1)) 
+  ylab("Average relative abundance")
+top_leaf_bar
+
+```
+
+
+
+
+
+
+```{r}
+Pathogen_relabun<-rowSums(path_taxapseqtestaq@otu_table)/rowSums(pseqtest@otu_table)
+Pathogen_richness <- path_taxaalpha$Observed
+aqualpha<- cbind(aqualpha, Pathogen_richness)
+aqualpha<- cbind(aqualpha, Pathogen_relabun)
+litter_alpha <- aqualpha[aqualpha$substrate=='L',]
+
+summary(100*litter_alpha$Pathogen_relabun)  
+
+
+
+litter_alpha <- mutate(litter_alpha, logAqHyphpct=log(aqhypcount+1))
+litter_alpha <- mutate(litter_alpha, logPathpct=log(Pathogen_relabun+1))
+aqualpha_plot005 <- ggplot(litter_alpha, aes(x=logPathpct, y=logAqHyphpct, label=Site)) +
+ # facet_grid(. ~ substrate, labeller = sub_labeller)+
+  # scale_y_continuous(labels = scales::percent) +
+  geom_smooth(method='lm')+
+  geom_point(aes(colour=litter_alpha$WetDry))
+  #geom_text()
+  
+aqualpha_plot005
+
+aqualpha_plot005 <- ggplot(litter_alpha, aes(x=logPathpct, y=Observed, label=Site)) +
+ # facet_grid(. ~ substrate, labeller = sub_labeller)+
+  # scale_y_continuous(labels = scales::percent) +
+  geom_smooth(method='lm')+
+  geom_point(aes(colour=litter_alpha$WetDry))
+  #geom_text()
+  
+aqualpha_plot005
+cor.test(litter_alpha$Pathogen_relabun, litter_alpha$aqhypcount) 
+
+```
+
+myColors <- c("#00BFC4", "#F8766D","#7CAE00", "#C77CFF")
+
+
+
+
+
+
+
+
+### LEAF LITTER FUNCTIONAL GROUP BARPLOT
+
+I need to split litter saprotrophs into aquatic vs. non-aquatic, which can't be done from the microeco relabun object. I have to go back and start with the microeco FungalTraits ASV table, which I exported earlier. I am going to try to mutate the ASV trait table to make an aquatic litter saprotroph and non-aquatic litter saprotroph column, and then generate percent abundance in microeco.
+
+```{r}
+#func_asvtab <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs/FT_ASV_microeco_clean.csv")
+### Now, the question is, do I have to
+
+# create trans_func object
+t2 <- trans_func$new(microecotest)
+# identify species traits, automatically select database for prokaryotes or fungi
+# fungi_database = "FungalTraits" for the FungalTraits database
+t2$cal_spe_func(fungi_database = "FungalTraits")
+#write.csv(t2$res_spe_func,"FungalTraits_ASV_tab_microeco.csv")
+
+## creaate aquatic hyphomycete column, i.e., primary litter saprotrophs assigned as 'freshwater'
+t2$res_spe_func <- t2$res_spe_func %>% mutate(`primary_lifestyle|aquatic_hyphomycete` = t2$res_spe_func$`primary_lifestyle|litter_saprotroph`+t2$res_spe_func$`Aquatic_habitat|freshwater`)
+t2$res_spe_func$`primary_lifestyle|aquatic_hyphomycete` <- c(0, 1)[ findInterval(t2$res_spe_func$`primary_lifestyle|aquatic_hyphomycete`, c(0, 1.5, Inf)) ]
+###WOW IT WORKED!!!
+###Now put all the other litter saprotrophs in a 'non.aquatic' bin. Some of these will be "partly aquatic", but I looked at the taxa, and those IDed as 'freshwater' are our canonical aquatic hyphomycetes, whereas those listed as "partly aquatic" tend to be more facultatively so. Still, I may loop back to redo this binning.
+t2$res_spe_func <- t2$res_spe_func %>% mutate(`primary_lifestyle|non.aquatic_litter_saprotroph` = t2$res_spe_func$`primary_lifestyle|litter_saprotroph`-t2$res_spe_func$`Aquatic_habitat|freshwater`)
+t2$res_spe_func$`primary_lifestyle|non.aquatic_litter_saprotroph` <- c(0, 1)[ findInterval(t2$res_spe_func$`primary_lifestyle|non.aquatic_litter_saprotroph`, c(-2, 0.5, Inf)) ]
+####YESSSSSSSS. check summary() if you need proof of my simply addition/subtraction/interval method for mutating without complicaated loops.
+
+###NOW if  it does percent abundance easily enough, we are home free.
+
+# calculate abundance-unweighted functional redundancy of each trait for each network module
+t2$cal_spe_func_perc(use_community = TRUE)
+relabun_func<-t2$res_spe_func_perc
+t2$res_spe_func_perc
+write.csv(relabun_func, "functional_group_percent_abundance_aquatichyphosplitWOW.csv")
+# plot the functional redundancy of network modules
+#plot<- t2$plot_spe_func_perc(select_samples = paste0("M", 1:10))
+#microecotest$sample_table$substrate <- as.factor(microecotest$sample_table$substrate)
+microecotest$sample_table$substrate<- factor(microecotest$sample_table$substrate, levels = c("B", "L", "S", "W"))
+
+plot<- t2$plot_spe_func_perc(select_samples = microecotest$sample_table$substrate)
+
+
+```
+
+functional analysis
+
+```{r}
+func_relabunwow <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs/func_relabunWOW.csv", row.names=1)
+perc_func_env<- merge(samdftest,func_relabunwow,by="row.names")
+row.names(perc_func_env) <- perc_func_env$Row.names
+
+#litter_alpha <- aqualpha[aqualpha$substrate=='L',]
+#lfunc<- perc_func_env[perc_func_env$substrate=='L',]
+#lfunc<- lfunc[,48:78]
+
+###lumping endophytes
+lfunc <- lfunc %>% mutate(endophyte = foliar_endophyte+root_endophyte)
+#lfunc <- lfunc %>% mutate(aquatic_hyphomycete = litter_saprotroph[])
+  
+  
+
+lfuncbind<- cbind(lfunc$animal_parasite,lfunc$mycoparasite, lfunc$plant_pathogen, lfunc$endophyte, lfunc$soil_saprotroph,lfunc$unspecified_saprotroph,)
+tfunc<-t(lfunc)
+```
+
+
+### here is the puppy!!!
+
+```{r}
+#Create an "other" category for the phyla not retained
+#filtered_proportions <- colSums(perc_func_env) - 
+#func_relabunwow <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs/func_relabunWOW.csv", row.names=1)
+func_relabunwow <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs/func_relabunWOWtrim.csv", row.names=1)
+perc_func_env<- merge(samdftest,func_relabunwow,by="row.names")
+row.names(perc_func_env) <- perc_func_env$Row.names
+func_prop<- perc_func_env[48:58]/rowSums(perc_func_env[48:58])
+rowSums(func_prop)
+#func_prop <- func_prop
+#Add taxa names as a column
+func_prop$functional_groups <- row.names(func_prop)
+
+#transform into long format
+func_proplong <- gather(func_prop, Sample, Proportion, -functional_groups)
+colnames(func_proplong)<- c("Sample", "functional_groups", "Proportion")
+## [1] "substrate" "WetDry"
+funcmet<-data.frame("Sample"=row.names(perc_func_env),
+                     "Substrate"=perc_func_env$substrate,
+                     "WetDry"=perc_func_env$WetDry,
+                     stringsAsFactors=T)
+row.names(funcmet)<- funcmet$Sample
+#merge metadata with major taxa data
+func_proplong <- merge(func_proplong, funcmet, by="Sample")
+#Summarize by depth and hydration
+phyla_summary <- 
+  func_proplong %>% # the names of the new data frame and the data frame to be summarised
+  group_by(Substrate, WetDry, functional_groups) %>%   # the grouping variable
+  summarise(mean_prop = mean(Proportion))  # calculates the mean of each group
+## `summarise()` has grouped output by wet/dry and substrate. You can override using the `.groups` argument.
+phyla_summary
+
+phyla_summary$Substrate <- factor(phyla_summary$Substrate,
+                                 levels=c( "B", "L","S", "W")) #reorder variables
+phyla_summary$WetDry <- factor(phyla_summary$WetDry, levels= c("WET","DRY")) #reorder variables
+phyla_summary$functional_groups <- factor(phyla_summary$functional_groups, levels= c("animal_parasite","ectomycorrhizal","lichenized","Other","unspecified_saprotroph","wood_saprotroph","soil_saprotroph","endophyte","plant_pathogen","non.aquatic_litter_saprotroph","aquatic_hyphomycete"))
+#, levels= rev(c("p__Basidiomycota","p__Mortierellomycota","p__Kickxellomycota","p__Rozellomycota","Unclassified_Phylum","c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Lecanoromycetes", "Unclassified_Ascomycetes","Other")))
+#color palette
+
+
+sublab<- c("Epilithic biofilms", "Leaf litter", "Benthic sediment", "Surface water")
+names(sublab)<- c("B","L","S","W")
+
+pal12 <- rev(tableau20(n=11)) #set n= to the number of taxa you are plotting
+#make stacked bar plot
+phylum_bar <- ggplot(phyla_summary, aes(x = WetDry, y = mean_prop, fill = functional_groups))+
+  geom_bar(stat = "identity", col=I("black")) +
+  scale_fill_manual(values=pal12)+
+  guides(fill=guide_legend(ncol=1))+
+  facet_wrap(~Substrate, labeller = labeller(Substrate=sublab), nrow=1, scales="free_x") +
+  labs(x="Substrate", y="Percentage of Identified ITS Sequence Copies",
+       fill="functional_groups")+
+  #scale_facet_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+theme(axis.text.x = element_text(angle=60, hjust=1), legend.position = "right")+
+  theme(text=element_text(size=18), #change font size of all text
+        axis.text=element_text(size=16), #change font size of axis text
+        axis.title=element_text(size=16), #change font size of axis titles
+        plot.title=element_text(size=16), #change font size of plot title
+        legend.text=element_text(size=16), #change font size of legend text
+        strip.text.x = element_text(size = 16),
+        legend.title=element_text(size=16)) #change font size of legend title  
+phylum_bar
+ 
+#c(180,100) *
+#  0.0394 * # convert mm to inch
+#  600 # convert to pixels
+## [1] 4255.2 2364.0
+plotout <- "Functional Barplot_TESTINGHYPHOtrimmm.tiff"
+agg_tiff(filename=plotout, width=4255, height=2364, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+phylum_bar
+invisible(dev.off())
+```
+
+
+
+
+
