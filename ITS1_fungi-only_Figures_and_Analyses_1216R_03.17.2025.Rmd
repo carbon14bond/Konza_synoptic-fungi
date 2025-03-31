@@ -1,0 +1,2489 @@
+---
+title: "Appendix_S2_Konza_ITS_data_analysis"
+author: "Charles T. Bond"
+date: "03/16/2024"
+output: html_document
+---
+### Setup
+```{r, include=FALSE}
+rm(list = ls())
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/Users/chunk/AIMS_Konza_synoptic_ITS_community/fungi")
+knitr::opts_knit$set(root.dir = "/Users/chunk/AIMS_Konza_synoptic_ITS_community/fungi")
+
+```
+
+```{r}
+options(knitr.duplicate.label = "allow")
+#library(dada2)
+library(phyloseq)
+library(vegan)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(pheatmap)
+library(GUniFrac)
+#library(metagMisc)
+#library(raster)
+library(pals)
+library(RColorBrewer)
+library(ragg)
+library(ggpubr)
+
+#Set theme
+theme_set(theme_bw() + theme(
+              plot.title = element_text(size=20, color="black"),
+              axis.text.x = element_text(size=15, color="black"),
+              axis.text.y = element_text(size=15, color="black"),
+              axis.title.x = element_text(size=15),
+              axis.title.y = element_text(size=15),
+              legend.text = element_text(size=12),
+              legend.title = element_text(size=15),
+            #  legend.position = "bottom",
+            #  legend.key=element_blank(),
+            #  legend.key.size = unit(0.5, "cm"),
+            #  legend.spacing.x = unit(0.1, "cm"),
+            #  legend.spacing.y = unit(0.1, "cm"),
+              panel.background = element_blank(), 
+              #panel.border = element_rect(colour = "black", fill=NA, size=1),
+              plot.background = element_blank()))
+```
+
+# Statistical Analysis-Data Curation
+# FUNGI-ONLY ANALYSES. full dataset, not rarified
+This is will produce the fungal community tables and statistics on fungal diversity at Konza.
+
+```{r}
+setwd('/Users/chunk/AIMS_Konza_synoptic_ITS_community/phyloseq_tabs/fall2023')
+
+#Create phyloseq object
+#read in files
+asvtab <- read.table("practice09-15-2023.count_table", header=T, row.names=1,
+                   check.names=F, sep="\t")
+#row.names(asvtab)<- gsub("-", "_", row.names(asvtab))
+#/Users/chunk/AIMS_Konza_synoptic_ITS_community/submetatab102623.csv
+#metadata_full <- read.csv("submetatab06282024.csv", row.names=1)
+#metadata_full <- read.csv("submetatab03072025.csv", row.names=1)
+metadata_full <- read.csv("submetatab03102025.csv", row.names=1)
+
+metadata_full$substrate <- as.factor(metadata_full$substrate)
+metadata_full<-metadata_full[metadata_full$substrate!='W',]
+metadata_full$burn_freq<-1/metadata_full$burn_interval
+#taxtab <- as.matrix(read.csv("full_euk_ensembleTax_tab_kzsyn_04112023.csv", header = T, row.names=1))
+taxtab <- as.matrix(read.csv("final_fungi_tax_tab_kzsyn_09-15-2023.csv", header = T, row.names=1))
+
+asvtab <- otu_table(asvtab, taxa_are_rows = FALSE)
+taxtab <- tax_table(taxtab)
+metadata <- sample_data(metadata_full)
+#combine into phyloseq object
+pseqtest <- phyloseq(asvtab, taxtab, metadata)
+#extract easy-to-use sample data
+samdftest <- data.frame(sample_data(pseqtest))
+
+cured_asvs<- pseqtest@otu_table
+summary(rowSums(cured_asvs))
+sum(rowSums(cured_asvs))
+ncol(cured_asvs)
+
+##remove singletons, doubletons, and ASVs with less than 5 reads across all samples. 
+cured_asvs <- cured_asvs[,colSums(cured_asvs)>5]
+summary(rowSums(cured_asvs))
+
+#rowSums(cured_asvs)
+pseqtest <- phyloseq(cured_asvs, taxtab, metadata)
+#extract easy-to-use sample data
+samdftest <- data.frame(sample_data(pseqtest))
+
+sum(rowSums(cured_asvs))
+ncol(cured_asvs)
+
+## Examine the read depths by substrate:
+###Leaf
+summary(rowSums(pseqtest@otu_table[pseqtest@sam_data$substrate=="L",]))
+##L sample n
+nrow(pseqtest@otu_table[pseqtest@sam_data$substrate=="L",])
+
+###Biofilm
+summary(rowSums(pseqtest@otu_table[pseqtest@sam_data$substrate=="B",]))
+##B sample n
+nrow(pseqtest@otu_table[pseqtest@sam_data$substrate=="B",])
+
+###Sediment
+summary(rowSums(pseqtest@otu_table[pseqtest@sam_data$substrate=="S",]))
+##S sample n
+nrow(pseqtest@otu_table[pseqtest@sam_data$substrate=="S",])
+
+###
+```
+
+#### site characteristics
+```{r}
+### subset selecting any one of three substrates to get one row of metadata per site
+metadata_sitechars<-metadata_full[metadata_full$substrate=='S',]
+
+### kmeans clustered (k=3) by annual percent wet clusters
+metadata_sitechars
+summary(metadata_sitechars$burn_interval)
+sd(metadata_sitechars$burn_interval)
+```
+
+```{r}
+metasite_corr<- metadata_sitechars[,c("prc_wet","tempC_mean","elevation","distance_from_outlet","drainage_area","twi", "slope_percent","burn_interval","canopy_cover_percent", "B_Chl.a_ug_per_cm2")]
+library(linkET)
+metacorrplot50<- qcorrplot(correlate(x=metasite_corr[1:10], y=NULL, method = "spearman"), type = "lower", diag = FALSE, grid_size = 0.5) +
+  geom_square() +
+  geom_mark(sep = '\n',size=4,sig_level = c(0.05,0.01,0.001),sig_thres = 0.05,
+            only_mark = TRUE)+
+  #scale_fill_gradientn(colours = RColorBrewer::brewer.pal(11, "RdBu"))+
+  scale_fill_gradientn(colours = RColorBrewer::brewer.pal(11, "RdYlBu"))+
+  guides(fill = guide_colorbar(title = "Spearman's rho"))+
+  theme(legend.key.size = unit(25,"pt"),
+        axis.text = element_text(size = 18,color = "black"),
+        strip.text = element_text(size = 18,color = "black"),
+        plot.title=element_text(size=16),)+
+  theme(legend.position = "right")+
+  xlab(label="")+
+  ylab(label="")+
+  labs(title = "Environmental predictors (50 sites)")
+metacorrplot50
+
+
+metadata_sitecharsa<-metadata_sitechars[!is.na(metadata_sitechars$alpha.cent.wt),]
+metasitedag_corr<- metadata_sitecharsa[,c("prc_wet","tempC_mean","elevation","distance_from_outlet","drainage_area","twi", "slope_percent","burn_interval", "canopy_cover_percent", "B_Chl.a_ug_per_cm2","W_Chl.a_ug_per_mL","alpha.cent.wt", "flowing.upstream.length.m")]
+
+metacorrplot42<- qcorrplot(correlate(x=metasitedag_corr[1:13], y=NULL, method = "spearman"), type = "lower", diag = FALSE, grid_size = 0.5) +
+  geom_square() +
+  geom_mark(sep = '\n',size=4,sig_level = c(0.05,0.01,0.001),sig_thres = 0.05,
+            only_mark = TRUE)+
+  #scale_fill_gradientn(colours = RColorBrewer::brewer.pal(11, "RdBu"))+
+  scale_fill_gradientn(colours = RColorBrewer::brewer.pal(11, "RdYlBu"))+
+  guides(fill = guide_colorbar(title = "Spearman's rho"))+
+  theme(legend.key.size = unit(25,"pt"),
+        axis.text = element_text(size = 18,color = "black"),
+        strip.text = element_text(size = 18,color = "black"),
+        plot.title=element_text(size=16),)+
+  theme(legend.position = "right")+
+  xlab(label="")+
+  ylab(label="")+
+  labs(title = "Environmental predictors (42 wet StreamDAG sites)")
+metacorrplot42
+
+library(cowplot)
+plotout <- "envi_corrplots_03102025.tiff"
+agg_tiff(filename=plotout, width=2400, height=4200, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+plot_grid(metacorrplot50,metacorrplot42,labels="AUTO", ncol=1)
+invisible(dev.off())
+
+
+
+
+detach("package:linkET", unload=TRUE)
+
+```
+
+
+
+###Accumulation curves from unrarefied data
+```{r}
+#library('rgdal')
+#library('biosurvey')
+### epilithon leaf sediment 
+myColors <- c("#9ACD32","#CD853F","#B0C4DE")
+
+pseqtestf<-pseqtest
+samdftestf<-samdftest
+
+botu<- pseqtestf@otu_table[samdftestf$substrate=='B',]
+lotu<- pseqtestf@otu_table[samdftestf$substrate=='L',]
+sotu<- pseqtestf@otu_table[samdftestf$substrate=='S',]
+#wotu<- pseqtestf@otu_table[samdftestf$substrate=='W',]
+
+accum_nor_B <- specaccum(botu, method="random")
+accum_nor_L <- specaccum(lotu, method="random")
+accum_nor_S <- specaccum(sotu, method="random")
+#accum_nor_W <- specaccum(wotu, method="random")
+
+plot(accum_nor_S, col = myColors[3])
+#then plot the rest
+plot(accum_nor_L, add = TRUE, col = myColors[2]) #col is COLOUR setting, so change it to something else if you want 
+plot(accum_nor_B, add = TRUE, col = myColors[1])
+#plot(accum_nor_W, add = TRUE, col = 4)
+legend("topright",y=NULL,legend=as.factor(samdftestf$substrate),fill=NULL,col = as.factor(samdftestf$substrate))
+#legend("topright",threednmds$xyz.convert(18, 0, 12), pch = 1, col = as.factor(samdftest$substrate), yjust=0, legend = as.factor(samdftest$substrate), cex = 1)
+
+#data <- data.frame(Sites=acc$sites, Richness=acc$richness, SD=acc$sd)
+dfb <-data.frame(Sites=accum_nor_B$sites, Richness=accum_nor_B$richness, SD=accum_nor_B$sd)
+dfl <-data.frame(Sites=accum_nor_L$sites, Richness=accum_nor_L$richness, SD=accum_nor_L$sd)
+dfs <-data.frame(Sites=accum_nor_S$sites, Richness=accum_nor_S$richness, SD=accum_nor_S$sd)
+#dfw <-data.frame(Sites=accum_nor_W$sites, Richness=accum_nor_W$richness, SD=accum_nor_W$sd)
+
+
+library(RColorBrewer)
+
+
+
+#define custom color scale
+#myColors <- brewer.pal(3, "Spectral")
+myColors <- c("#9ACD32","#CD853F","#6495ED")
+#myColors <- c("#ADFF2F","#A0522D","#FFD700")
+#myColors <- c("#ADFF2F","#D2B48C"," #8B4513")
+#myColors <- c("#F8766D","#7CAE00", "#00BFC4") #"#C77CFF"
+
+
+
+              
+names(myColors) <- levels(samdftestf$substrate)
+custom_colors <- scale_colour_manual(name = samdftestf$substrate, values = myColors)
+
+
+
+
+ASVaccumsub<- ggplot() +
+  geom_point(data=dfl, colour="#CD853F", aes(x=Sites, y=Richness, )) +
+geom_line(data=dfl, colour="#CD853F",aes(x=Sites, y=Richness)) +
+geom_ribbon(data=dfl,aes(x=Sites,
+ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2)+
+
+  geom_point(data=dfb, colour="#9ACD32", aes(x=Sites, y=Richness)) +
+geom_line(data=dfb, colour="#9ACD32", aes(x=Sites, y=Richness)) +
+geom_ribbon(data=dfb,aes(x=Sites,
+ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2)+
+  
+  geom_point(data=dfs, colour="#6495ED", aes(x=Sites, y=Richness)) +
+geom_line(data=dfs, colour="#6495ED", aes(x=Sites, y=Richness)) +
+geom_ribbon(data=dfs,aes(x=Sites,
+ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2) +
+  # Color of lines and points
+scale_color_discrete(name='Substrate:', labels=c('Epilithic Biofilms', 'Leaf Litter', 'Sediment'))+
+  #title(main = "Fungal ASV accumulation curves by substrate")+
+
+                        #, 'Surface #water'))+
+
+#  geom_point(data=dfw, aes(x=Sites, y=Richness, colour='W')) +
+#geom_line(data=dfw, aes(x=Sites, y=Richness,colour='W')) +
+#geom_ribbon(data=dfw,aes(x=Sites,
+#ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2)+
+  labs(title = "Fungal ASV accumulation curves by substrate", y="ASV Richness")+
+   theme(text=element_text(size=12), #change font size of all text
+        axis.text=element_text(size=12), #change font size of axis text
+        axis.title=element_text(size=12), #change font size of axis titles
+        plot.title=element_text(size=15), #change font size of plot title
+       # legend.text=element_text(size=15),
+      #  legend.title = element_text(size=15),#change font size of legend text
+        strip.text.x = element_text(size = 12),
+        #legend.title=element_text(size=9),
+       # legend.position = "right",
+        plot.margin = unit(c(1, 1, 1, 2), "lines"))  #+
+  #theme(legend.position="bottom")
+  #scale_fill_discrete(labels=c('High Program',
+#  custom_colors
+ASVaccumsub
+ASVaccumsub2<- ASVaccumsub+ theme(legend.position="bottom", plot.margin = unit(c(1, 1, 2, 2), "lines"))
+ASVaccumsub2
+plotout <- "Fungal_ASV_accum.curve_substrate_022224.tiff"
+agg_tiff(filename=plotout, width=2555, height=1464, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+ASVaccumsub<- ASVaccumsub + theme(legend.position = "bottom")+ scale_color_discrete(name='Substrate:', labels=c('Epilithic Biofilms', 'Leaf Litter', 'Sediment'))
+ASVaccumsub
+invisible(dev.off())
+
+
+```
+Saved ASVaccumsub so I can combine it in a Beta Diversity figure with multiple other plots.
+
+
+```{r}
+library(MicEco)
+library(eulerr)
+#library(RColorBrewer)
+
+
+#myColors <- c("#F8766D","#00BA38", "#619CFF") #"#C77CFF"
+#myColors <- c("#ADFF2F","#A0522D","#FFD700")
+#myColors <- c("#9ACD32","#A0522D","#FFD700")
+myColors <- c("#9ACD32","#CD853F","#6495ED")
+
+venndiagram<- ps_venn(pseqtest,group="substrate", labels=c('Epilithon', 'Leaf litter', 'Sediment'), fill=myColors)
+
+venndiagram
+
+```
+
+summary stats on taxa before rarefaction 
+```{r}
+tax_tib<-as.data.frame(pseqtest@tax_table@.Data)
+unique_gen<-unique(tax_tib$Genus)
+###number of genera
+length(unique_gen)
+nrow(tax_tib)
+
+unique_fam<-unique(tax_tib$Family)
+#number of families
+length(unique_fam)
+
+unique(tax_tib$Phylum)
+#unique(tax_tib$Class)
+#unique(tax_tib$Family)
+
+## number of ASV without genus assigned
+sum(is.na(tax_tib$Genus))
+
+### number of ASVs
+nrow(tax_tib)
+
+## proportion of ASVs without genus-level taxonomy:
+sum(is.na(tax_tib$Genus))/nrow(tax_tib)
+
+### proportion of ASVs with genus-or-lower taxonomy:
+1-(sum(is.na(tax_tib$Genus))/nrow(tax_tib))
+
+```
+
+
+## Rarefaction
+NMDS of fungi, rarefied data
+rarefaction
+```{r}
+summary(rowSums(cured_asvs))
+sum(rowSums(cured_asvs))
+rowSums(cured_asvs)
+
+### NMDS no convergent solutions at the lower read depth. 
+set.seed(2024)
+####  As a reference, Smith & Peay 2021 did 5000 reads/sample. Our smallest leaf sample is slightly larger than that (5333 reads).
+#rarefied <- Rarefy(cured_asvs, 5333)
+
+#1747 would include 
+## next largest 2441
+rarefied <- Rarefy(cured_asvs, 2441)
+
+rarefied$discard
+## [1] "saltob1"
+rarasv<-rarefied$otu.tab.rff
+rarasv<- rarasv[,colSums(rarasv)>0]
+
+summary(rowSums(rarasv))
+
+## look at read depths for the different substrates:
+asvtab <- otu_table(rarasv, taxa_are_rows = FALSE)
+taxtab <- tax_table(taxtab)
+
+### removing leaf sample 04w03_L because it only contained one half leaf and therefore is an outlier. interestingly, lots of alternaria in that single leaf
+
+### removing sample 04w03_L, which was 1 leaf rather than 3, and sample Sft02_L, where the leaf types were missing
+#asvtab <- asvtab[row.names(asvtab)!="04w03_L"|row.names(asvtab)!="Sft02_L",]
+metadata<- metadata[metadata$Sample!="04w03_L",]
+metadata<- metadata[metadata$Sample!="Sft02_L",]
+### removing stics with not stic data
+#metadata_full<- metadata_full[!is.na(metadata_full$stic_wet_prob),]
+
+#metadata <- sample_data(metadata_full)
+#combine into phyloseq object
+pseqtest <- phyloseq(asvtab, taxtab, metadata)
+#extract easy-to-use sample data
+samdftest <- data.frame(sample_data(pseqtest))
+
+## Examine the read depths by substrate:
+###Leaf
+#summary(rowSums(pseqtest@otu_table[pseqtest@sam_data$substrate=="L",]))
+count(samdftest[samdftest$substrate=="L",])
+
+###Biofilm
+#summary(rowSums(pseqtest@otu_table[pseqtest@sam_data$substrate=="B",]))
+count(samdftest[samdftest$substrate=="B",])
+
+###Sediment
+#summary(rowSums(pseqtest@otu_table[pseqtest@sam_data$substrate=="S",]))
+count(samdftest[samdftest$substrate=="S",])
+
+unique(samdftest$Site)
+
+```
+
+
+
+## BETA DIVERSITY
+```{r}
+#generate distance matrices
+
+
+braytest <- phyloseq::distance(pseqtest, method = "bray")
+#jactest <- phyloseq::distance(pseqtest, method="jaccard", binary=TRUE)
+```
+
+```{r}
+#perform NMDS
+#Bray-Curtis
+braymds <- metaMDS(braytest, k=2, trymax=500, wascores = T)
+## Warning in metaMDS(braytest, k = 2, trymax = 500, wascores = T): stress is
+## (nearly) zero: you may have insufficient data
+brayscores <- scores(braymds)
+#Jaccard
+#jacmds <- metaMDS(jactest, k=3, trymax=500, wascores = T)
+#jacscores <- scores(jacmds)
+braymds
+#jacmds
+```
+
+```{r}
+stressplot(braymds)
+#stressplot(jacmds)
+
+factorfit(brayscores, samdftest$substrate, permutations = 999)
+#factorfit(jacscores, samdftest$substrate, permutations = 999)
+#factorfit(jacscores, samdftest$flow_state, permutations = 999)
+factorfit(brayscores, samdftest$flow_state, strata = samdftest$substrate, permutations = 999)
+
+factorfit(brayscores, samdftest$pw_cluster, strata = samdftest$substrate, permutations = 999)
+
+```
+
+```{r}
+myColors <- c("#9ACD32","#CD853F","#6495ED")
+
+nmdsp3 <- plot_ordination(pseqtest, braymds, type="samples", color="substrate", shape="flow_state")+
+  geom_point(size=2)+scale_colour_manual(values=myColors)
+nmdsp3
+
+
+nmds2plus<- plot_ordination(pseqtest, braymds, type="samples")
+nmds2plus$layers<-nmds2plus$layers[-1]
+nmds2plus<-nmds2plus+
+  geom_point(size=2, aes(shape=flow_state, color=substrate))+
+  scale_colour_manual(values=myColors, name='Substrate:', labels=c('Epilithon', 'Leaf litter', 'Sediment'))+
+  #scale_color_discrete(name='Substrate:', labels=c('Epilithic biofilms', 'Leaf litter', 'Benthic sediment'))+
+  scale_shape_discrete(name='Flow state:')+
+  stat_ellipse(
+    #inherit.aes = FALSE, 
+               aes(x=brayscores[,1],y=brayscores[,2],color=samdftest$substrate 
+ #                                       ,linetype=(samdftest$flow_state)
+                                        ))+
+ # aes(linetype=(samdftest$flow_state))+
+#  scale_linetype_manual(values=c("dashed","solid"), name="Wet/Dry ellipse")+
+ # scale_shape(name="Wet/Dry sample")+
+  labs(title = "Bray-Curtis NMDS of fungal ASVs by substrate")+
+  annotate("text", x = -1.1, y = -1.4, label = sprintf("k=2, Stress=%.4f",braymds$stress), size=3.5)+
+ # theme(legend.text = element_text(size=10))+
+    theme(text=element_text(size=8), #change font size of all text
+        axis.text=element_text(size=10), #change font size of axis text
+        axis.title=element_text(size=10), #change font size of axis titles
+        plot.title=element_text(size=12), #change font size of plot title
+        legend.text=element_text(size=10), #change font size of legend text
+        strip.text.x = element_text(size = 10),
+        #legend.title=element_text(size=9),
+        legend.position = "none",
+        plot.margin = unit(c(1, 1, 1, 2), "lines"))      #+
+  # guides(color = myColors) #+scale_colour_manual(values=myColors)
+
+nmds2plus
+
+
+### now with legend, for publishing
+nmds2plusleg<-nmds2plus+
+  geom_point(size=2, aes(shape=flow_state, color=substrate))+
+  scale_colour_manual(values=myColors, name='Substrate:', labels=c('Epilithon', 'Leaf litter', 'Sediment'))+
+  #scale_color_discrete(name='Substrate:', labels=c('Epilithic biofilms', 'Leaf litter', 'Benthic sediment'))+
+  scale_shape_discrete(name='Flow state:')+
+  stat_ellipse(
+    #inherit.aes = FALSE, 
+               aes(x=brayscores[,1],y=brayscores[,2],color=samdftest$substrate 
+ #                                       ,linetype=(samdftest$flow_state)
+                                        ))+
+ # aes(linetype=(samdftest$flow_state))+
+#  scale_linetype_manual(values=c("dashed","solid"), name="Wet/Dry ellipse")+
+ # scale_shape(name="Wet/Dry sample")+
+  labs(title = "Bray-Curtis NMDS of fungal ASVs by substrate")+
+  annotate("text", x = -1.1, y = -1.4, label = sprintf("k=2, Stress=%.4f",braymds$stress), size=3.5)+
+ # theme(legend.text = element_text(size=10))+
+    theme(text=element_text(size=12), #change font size of all text
+        axis.text=element_text(size=12), #change font size of axis text
+        axis.title=element_text(size=12), #change font size of axis titles
+        plot.title=element_text(size=15), #change font size of plot title
+        legend.text=element_text(size=15),
+        legend.title = element_text(size=15),#change font size of legend text
+        strip.text.x = element_text(size = 12),
+        #legend.title=element_text(size=9),
+        legend.position = "right",
+        plot.margin = unit(c(1, 1, 1, 2), "lines"))      #+
+  # guides(color = myColors) #+scale_colour_manual(values=myColors)
+nmds2plusleg
+
+```
+
+### Combined beta-diversity plot:
+ASVaccumsub   nmds2plus   venndiagram
+```{r}
+library(cowplot)
+
+### Golden ratio: 1.618:1, to scale the figures.
+
+ASVaccumsub<- ASVaccumsub+ ggtitle("")  #theme(plot.title = NULL)#element_text(size=11))
+
+bottom<- plot_grid(ASVaccumsub,venndiagram,#dbRDA_B,dbRDAL,dbRDA_S, 
+          labels=c('B','C'), ncol=2, rel_widths = c(1.618,1))
+
+bottom
+
+plotout <- "Beta_threeway_03.15.2025.tiff"
+agg_tiff(filename=plotout, width=2200, height=2500, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+plot_grid(nmds2plusleg,bottom,
+          labels=c('A','',''), ncol=1, rel_heights = c(1.618,1))
+invisible(dev.off())
+
+
+```
+
+Table of PERMANOVA results
+```{r}
+### ANOSIM for effects of substrate ## cut, redundant with PERMANOVA
+#anosim(braytest, samdftest$substrate, permutations = 99999)
+
+### PERMANOVA for substarte effects
+adonis2(braytest ~ substrate, data = samdftest, permutations = 99999, by="terms")
+
+### testing for differences in dispersion between substrates
+bds<- betadisper(braytest, samdftest$substrate)
+anova(bds)
+### no significant differences in dispersion between substrates.
+
+
+### dispersion test for substrate
+bds<- betadisper(braytest, samdftest$substrate)
+
+permutest(bds)
+
+plot(bds)
+
+boxplot(bds)
+
+mod.HSD<- TukeyHSD(bds)
+mod.HSD
+plot(mod.HSD)
+
+```
+
+
+### PERMANOVA for all samples
+```{r}
+samdftest$lndrainage_area<- log(samdftest$drainage_area)
+
+## annual flow permanence
+adonis2(braytest ~ prc_wet, strata=samdftest$substrate, data = samdftest,  permutations = 9999, by="terms")
+
+adonis2(braytest ~ lndrainage_area*prc_wet, strata=samdftest$substrate, data = samdftest,  permutations = 9999, by="terms")
+
+#################################
+#adonis2(braytest ~ lndrainage_area+burn_interval+prc_wet+tempC_mean
+#        , strata=samdftest$substrate, data = samdftest,  permutations = 9999, by="terms")
+##########
+
+
+### Multi-factor PERMANOVA for all samples 
+## bray~ drainage:annual percent wet + burn interval
+adonis2(braytest ~ lndrainage_area*prc_wet+burn_interval#+tempC_mean
+        , strata=samdftest$substrate, data = samdftest,  permutations = 99999, by="terms")
+################################
+```
+### PERMANOVA for StreamDAG/Wet sites
+```{r}
+####streamDAG measures on beta diversity
+#packageVersion("streamDAG")
+pseq_DAG<- subset_samples(pseqtest, !is.na(alpha.cent))
+sam_DAG<- data.frame(sample_data(pseq_DAG))
+table(sam_DAG$substrate)
+
+bray_DAG <- phyloseq::distance(pseq_DAG, method = "bray")
+##stream temp the week before
+adonis2(bray_DAG ~ alpha.cent, data = sam_DAG, strata=sam_DAG$substrate)
+adonis2(bray_DAG ~ alpha.cent.wt, data = sam_DAG, strata=sam_DAG$substrate,  permutations = 9999)
+#adonis2(bray_DAG ~ alpha.cent.wt+burn_interval+prc_wet+tempC_mean, data = sam_DAG, strata=sam_DAG$substrate,  permutations = 9999, by="terms")
+
+adonis2(bray_DAG ~ alpha.cent.wt*prc_wet+burn_interval, data = sam_DAG, strata=sam_DAG$substrate,  permutations = 99999, by="terms")
+
+```
+
+### PERMANOVA for Leaf Type effects in leaf samples
+```{r}
+# subsetting for leaf sampels only
+pseqL<- subset_samples(pseqtest, substrate=='L')
+samL<- data.frame(sample_data(pseqL))
+table(samL$substrate)
+
+bray_L <- phyloseq::distance(pseqL, method = "bray")
+
+
+adonis2(bray_L ~ Oak, data = samL,  permutations = 9999, by="terms")
+adonis2(bray_L ~ Elm, data = samL,  permutations = 9999, by="terms")
+adonis2(bray_L ~ Populus, data = samL,  permutations = 9999, by="terms")
+adonis2(bray_L ~ Graminales, data = samL,  permutations = 9999, by="terms")
+
+
+otherleaf<- samL
+otherleaf$Other_leaf <- ifelse(otherleaf$Locust == "1" | otherleaf$Rubrus == "1" | otherleaf$Elderberry == "1" | otherleaf$Forb == "1" | otherleaf$Shrub == "1" , 1, 0)
+
+adonis2(bray_L ~ Other_leaf, data = otherleaf)
+
+
+```
+
+
+
+# ALPHA DIVERSITY
+Documentation for `estimate_richness` advises you do not rarefy data beforehand, so I am testing on the `beta` pseqtest version. 
+```{r}
+#setwd("/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs")
+#calculate alpha diversity
+#write.csv(samdftest, "/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs/metadata.csv" )
+#metadata <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/metadata.csv", stringsAsFactors=TRUE)
+
+#pseqtest <- pseqtestBetac
+#samdftest <- samdftestBetac
+
+
+alpha <- estimate_richness(pseqtest, split=TRUE, measures=NULL)
+#write.csv(alpha, "alpha diversity temp.csv")
+#alpha2 <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/alpha diversity.csv", stringsAsFactors=TRUE)
+
+#alpha's row names got messed up, but order is conserved, so set row.names to samdftest
+row.names(alpha)<- row.names(samdftest)
+
+alpha <- merge(samdftest, alpha, by= 'row.names', all=TRUE)
+row.names(alpha) <- alpha$Row.names 
+#alpha 
+#write.csv(alpha, "alpharar diversity_fungi_040723.csv")
+
+pseq_richplot<- plot_richness(pseqtest, x = "substrate", color = "substrate", measures = c("Observed","Shannon"))+ geom_boxplot()
+pseq_richplot
+
+              
+```
+
+
+
+### Playing with wet/dry effects
+
+```{r}
+alpha$substrate<- as.factor(alpha$substrate)
+alpha$flow_state<- as.factor(alpha$flow_state)
+alpha$wet_dry<- as.factor(alpha$wet_dry)
+#alphanp<- alpha[alpha$flow_state!='pool',]
+```
+
+We do not have enough dry sites for a formal analysis of wet/dry effects
+```{}
+
+# Shapiro-Wilk test for normality
+shapiro_test_subxflow1 <- alpha %>%
+  group_by(substrate) %>%
+  summarize(p_value = shapiro.test(Shannon)$p.value)
+shapiro_test_subxflow1
+
+
+#### Shannon diversity in wet leaf and wet sediments are non-normal, no ANOVA for you buddy
+alpha$lnShannon<- log(alpha$Shannon)
+# Shapiro-Wilk test for normality
+shapiro_test_subxflow1 <- alpha %>%
+  group_by(substrate, wet_dry) %>%
+  summarize(p_value = shapiro.test(lnShannon)$p.value)
+shapiro_test_subxflow1
+##did not normalize
+
+
+shapiro_test_subxflow2 <- alpha %>%
+  group_by(substrate, wet_dry) %>%
+  summarize(p_value = shapiro.test(Observed)$p.value)
+shapiro_test_subxflow2
+### ASV richness is normal
+
+summary(aov(Observed~substrate+wet_dry, data=alpha)) 
+### no effect of wet-dry
+
+```
+
+
+```{r}
+#Set theme
+theme_set(theme_bw() + theme(
+              plot.title = element_text(size=16, color="black"),#,
+              axis.text.x = element_text(size=12, color="black"),
+              axis.text.y = element_text(size=12, color="black"),
+              axis.title.x = element_text(size=14),
+              axis.title.y = element_text(size=14)#,
+              #legend.text = element_text(size=10),
+              #legend.title = element_text(size=10),
+            #  legend.position = "bottom",
+            #  legend.key=element_blank(),
+            #  legend.key.size = unit(0.5, "cm"),
+            #  legend.spacing.x = unit(0.1, "cm"),
+            #  legend.spacing.y = unit(0.1, "cm"),
+              #panel.background = element_blank(), 
+              #panel.border = element_rect(colour = "black", fill=NA, size=1),
+              #plot.background = element_blank()))
+              ))
+```
+
+```{r}
+alpha$flow_state<- as.factor(alpha$flow_state)
+sublablist<- c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment')
+sub_labeller <- function(variable,value){
+  return(sublablist[value])
+}
+library(ggpattern) 
+library(tidyverse)
+library(ggpubr)
+library(rstatix)
+#myColors <- c("#00BFC4", "#F8766D","#7CAE00")
+#names(myColors) <- levels(alpha$substrate)
+#custom_colors <- scale_colour_manual(name = alpha$substrate, values = myColors)
+#df <- data.frame(level = levels(alpha$substrate), outcome = c("#00BFC4", "#F8766D","#7CAE00"))
+
+stat.test <- alpha %>%
+wilcox_test(Observed~substrate) %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance()
+stat.test
+effsize <- alpha %>%
+  wilcox_effsize(Observed~substrate)
+effsize
+
+subalpha_rich <- ggplot(alpha, aes(x=substrate, y=Observed)) +
+  #facet_grid(. ~ substrate, labeller = sub_labeller)+
+  #scale_x_discrete(labels=c('WET'='Wet', 'DRY'='Dry'))+
+  geom_boxplot()+
+  scale_x_discrete(labels = c('Epilithon','Leaf litter','Sediment'))+
+ # geom_dotplot(binaxis = "y", stackdir = "center") +
+  #geom_boxplot_pattern(aes(pattern = wet_dry), outlier.shape = NA, show.legend = FALSE) +
+  #scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("ASV Richness")+
+  ylim(0,600)+
+  #stat_pvalue_manual(stat.test$p.adj)+
+ #geom_signif(comparisons = combn(levels(alpha$substrate),2,simplify = F),
+  #            map_signif_level=TRUE)+
+   geom_signif(comparisons = list(c("L","S")),y_position = 500,
+              map_signif_level=TRUE)+
+     geom_signif(comparisons = list(c("B","S")),y_position = 540,
+            map_signif_level=TRUE)+
+       geom_signif(comparisons = list(c("B","L")),y_position = 460,
+            map_signif_level=TRUE)+
+ # labs(title = "ASV richness at wet versus dry sites")+
+  #scale_fill_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment'))+
+  #aes(fill=alpha$substrate, show.legend=FALSE)+
+  theme(legend.position='none',axis.text.x = element_text(size=16), axis.title.x = element_blank(),strip.text.x = element_text(size = 16), plot.title = element_text(size=20, color="black"),
+              axis.text.y = element_text(size=16, color="black"),
+              axis.title.y = element_text(size=16))+
+  theme(plot.margin = unit(c(2, 2, 2, 2), "lines")) 
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+subalpha_rich
+###############
+
+##################################################
+stat.test <- alpha %>%
+wilcox_test(Shannon ~substrate) %>%
+ adjust_pvalue(method = "bonferroni") %>%
+  add_significance()
+stat.test
+effsize <- alpha %>%
+  wilcox_effsize(Shannon~substrate)
+effsize
+
+subalpha_shan <- ggplot(alpha, aes(x=substrate, y=Shannon)) +
+  #facet_grid(. ~ substrate, labeller = sub_labeller)+
+  #scale_x_discrete(labels=c('WET'='Wet', 'DRY'='Dry'))+
+  geom_boxplot()+
+  scale_x_discrete(labels = c('Epilithon','Leaf litter','Sediment'))+
+ # geom_dotplot(binaxis = "y", stackdir = "center") +
+  #geom_boxplot_pattern(aes(pattern = wet_dry), outlier.shape = NA, show.legend = FALSE) +
+  #scale_pattern_manual(values= c("WET" = "none", "DRY" = "circle"))+
+  #ggpattern::pattern_fill=alpha$substrate+
+  #scale_pattern_fill_manual(values = c('B'="#00BFC4", 'L'="#F8766D", 'S'="#7CAE00", 'W'="#C77CFF"))+
+ # scale_fill_grey(start=0.9, end=0.35) +
+  ylab("Shannon Diversity Index")+
+  ylim(0,6.5)+
+  #stat_pvalue_manual(stat.test$p.adj)+
+ #geom_signif(comparisons = combn(levels(alpha$substrate),2,simplify = F),
+  #            map_signif_level=TRUE)+
+   geom_signif(comparisons = list(c("L","S")),y_position = 5.7,
+              map_signif_level=TRUE)+
+     geom_signif(comparisons = list(c("B","S")),y_position = 6.2,
+            map_signif_level=TRUE)+
+       geom_signif(comparisons = list(c("B","L")),y_position = 5.4,
+            map_signif_level=TRUE)+
+  theme(legend.position='none',axis.text.x = element_text(size=16), axis.title.x = element_blank(),strip.text.x = element_text(size = 16), plot.title = element_text(size=20, color="black"),
+              axis.text.y = element_text(size=16, color="black"),
+              axis.title.y = element_text(size=16))+
+  theme(plot.margin = unit(c(2, 2, 2, 2), "lines")) 
+#  geom_boxplot(aes(fill=alpha$substrate)) +
+subalpha_shan
+###############
+
+library(cowplot)
+#plot_grid(alpha_flowstate, alpha_prcwet, alpha_DA, labels="AUTO", ncol = 1)
+plotout <- "Alpha-2-panel_03-14-2025.tiff"
+agg_tiff(filename=plotout, width=1800, height=2800, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+plot_grid(subalpha_rich, subalpha_shan, labels="AUTO",label_size = 18, ncol = 1)
+invisible(dev.off())
+
+```
+
+## Generalized linear models for alpha diversity
+```{r}
+### checkinig for normality of response variables (required for gaussian)
+# Shapiro-Wilk test for normality
+shapiro_test <- alpha %>%
+  group_by(substrate) %>%
+  summarize(p_value = shapiro.test(Observed)$p.value)
+shapiro_test
+
+# Shapiro-Wilk test for normality
+shapiro_test <- alpha %>%
+  group_by(substrate) %>%
+  summarize(p_value = shapiro.test(Shannon)$p.value)
+shapiro_test
+```
+So, for ASV richness, we can use a Gaussian (normal) distribution, while Shannon is non-normal and would would better with Gamma (skewed withh all positive values).
+
+### GLMs for ASV richness
+```{r}
+### Now, we should log-transform drainage area for this, since:
+summary(alpha$drainage_area)
+summary(log(alpha$drainage_area))
+
+## Log-transforming drainage_area
+alpha$lndrainage_area<- log(alpha$drainage_area)
+
+### Richness is normal but shannon diversity is non-normal
+##################### Richness ############################
+####### leaf
+
+##### BEST FIT FOR LEAF LITTER RICHNESS ###################
+glmoL<- glm(Observed ~ lndrainage_area, family = gaussian, data=alpha, subset = substrate=='L')
+summary(glmoL) ##### AIC: 516.67 LOWEST FOR Leaf RICHNESS
+###########################################################
+
+glmoL<- glm(Observed ~ lndrainage_area+prc_wet, family = gaussian, data=alpha, subset = substrate=='L')
+summary(glmoL) ###### AIC: 517.49
+
+glmoL<- glm(Observed ~ lndrainage_area*prc_wet, family = gaussian, data=alpha, subset = substrate=='L')
+summary(glmoL) ##### AIC: 517.95
+
+glmoL<- glm(Observed ~ lndrainage_area+prc_wet+burn_interval, family = gaussian, data=alpha, subset = substrate=='L')
+summary(glmoL) ##### AIC: 518.06
+
+glmoL<- glm(Observed ~ lndrainage_area+prc_wet+burn_interval+tempC_mean, family = gaussian, data=alpha, subset = substrate=='L')
+summary(glmoL) #### AIC: 520.04
+
+glmoL<- glm(Observed ~ lndrainage_area*prc_wet+tempC_mean, family = gaussian, data=alpha, subset = substrate=='L')
+summary(glmoL) #### AIC: 519.95
+
+glmoL<- glm(Observed ~ lndrainage_area*prc_wet+burn_interval, family = gaussian, data=alpha, subset = substrate=='L')
+summary(glmoL) #### AIC: 518.67
+
+#########################################################
+####### bioifilm
+glmoB<- glm(Observed ~ lndrainage_area, family = gaussian, data=alpha, subset = substrate=='B')
+summary(glmoB) ###AIC: 485.76
+
+glmoB<- glm(Observed ~ lndrainage_area+prc_wet, family = gaussian, data=alpha, subset = substrate=='B')
+summary(glmoB) ## AIC: 485.48
+
+glmoB<- glm(Observed ~ lndrainage_area*prc_wet, family = gaussian, data=alpha, subset = substrate=='B')
+summary(glmoB) ## AIC: 487.14
+
+glmoB<- glm(Observed ~ lndrainage_area+prc_wet+burn_interval, family = gaussian, data=alpha, subset = substrate=='B')
+summary(glmoB) ### AIC: 479.97
+
+###### BEST FIT FOR EPILITHON RICHNESS ###################
+glmoB<- glm(Observed ~ lndrainage_area+prc_wet+burn_interval+tempC_mean, family = gaussian, data=alpha, subset = substrate=='B')
+summary(glmoB) ### AIC: 476.36  #LOWEST FOR BIOFILM RICHNESS
+##########################################################
+
+glmoB<- glm(Observed ~ lndrainage_area*prc_wet+tempC_mean, family = gaussian, data=alpha, subset = substrate=='B')
+summary(glmoB) ### AIC: 480.57 
+
+glmoB<- glm(Observed ~ lndrainage_area*prc_wet+burn_interval, family = gaussian, data=alpha, subset = substrate=='B')
+summary(glmoB) ### AIC: 481.42
+
+#########################################################
+####### sediment
+###### BEST FIT FOR SEDIMENT RICHNESS ###################
+glmoS<- glm(Observed ~ lndrainage_area, family = gaussian, data=alpha, subset = substrate=='S')
+summary(glmoS) ## AIC: 591.47 # LOWEST IN SEDIMENT
+#########################################################
+
+glmoS<- glm(Observed ~ lndrainage_area+prc_wet, family = gaussian, data=alpha, subset = substrate=='S')
+summary(glmoS) ### AIC: 593.29
+
+glmoS<- glm(Observed ~ lndrainage_area*prc_wet, family = gaussian, data=alpha, subset = substrate=='S')
+summary(glmoS) ### AIC: 594.82
+
+glmoS<- glm(Observed ~ lndrainage_area+prc_wet+burn_interval, family = gaussian, data=alpha, subset = substrate=='S')
+summary(glmoS) ## AIC: 592.86
+
+glmoS<- glm(Observed ~ lndrainage_area+prc_wet+burn_interval+tempC_mean, family = gaussian, data=alpha, subset = substrate=='S')
+summary(glmoS) ## AIC: 594.48 
+
+glmoS<- glm(Observed ~ lndrainage_area*prc_wet+tempC_mean, family = gaussian, data=alpha, subset = substrate=='S')
+summary(glmoS) ## AIC: 596.13
+
+glmoS<- glm(Observed ~ lndrainage_area*prc_wet+burn_interval, family = gaussian, data=alpha, subset = substrate=='S')
+summary(glmoS) ## AIC: 594.42 
+#########################################################################################################
+```
+
+### GLMs for Shannon diversity
+```{r}
+# Shannon Diversity by substrate
+####### leaf
+glmsL<- glm(Shannon ~ lndrainage_area, family = Gamma, data=alpha, subset = substrate=='L')
+summary(glmsL) ### AIC: 84.772
+
+glmsL<- glm(Shannon ~ lndrainage_area+prc_wet, family = Gamma, data=alpha, subset = substrate=='L')
+summary(glmsL) ### AIC: 84.168 ### 
+
+###### BEST FIT FOR LEAF LITTER SHANNON ###################
+glmsL<- glm(Shannon ~ lndrainage_area*prc_wet, family = Gamma, data=alpha, subset = substrate=='L')
+summary(glmsL) ### AIC: 83.879 ### LOWEST FOR LEAF SHANNON
+###########################################################
+
+glmsL<- glm(Shannon ~ lndrainage_area+prc_wet+tempC_mean, family = Gamma, data=alpha, subset = substrate=='L')
+summary(glmsL) ### AIC: 84.168 ### 
+
+glmsL<- glm(Shannon ~ lndrainage_area+prc_wet+burn_interval, family = Gamma, data=alpha, subset = substrate=='L')
+summary(glmsL) ### AIC: 84.865
+
+glmsL<- glm(Shannon ~ lndrainage_area+prc_wet+burn_interval+tempC_mean, family = Gamma, data=alpha, subset = substrate=='L')
+summary(glmsL) ### AIC:  86.864 
+
+glmsL<- glm(Shannon ~ lndrainage_area*prc_wet+tempC_mean, family = Gamma, data=alpha, subset = substrate=='L')
+summary(glmsL) ### AIC: 85.87
+
+glmsL<- glm(Shannon ~ lndrainage_area*prc_wet+burn_interval, family = Gamma, data=alpha, subset = substrate=='L')
+summary(glmsL) ### AIC: 84.755
+
+#################################################################################
+####### bioifilm
+glmsB<- glm(Shannon ~ lndrainage_area, family = Gamma, data=alpha, subset = substrate=='B')
+summary(glmsB) ### AIC: 71.798
+
+glmsB<- glm(Shannon ~ lndrainage_area+prc_wet, family = Gamma, data=alpha, subset = substrate=='B')
+summary(glmsB) ### AIC: 73.304
+
+glmsB<- glm(Shannon ~ lndrainage_area*prc_wet, family = Gamma, data=alpha, subset = substrate=='B')
+summary(glmsB) ### AIC: 73.084
+
+glmsB<- glm(Shannon ~ lndrainage_area+prc_wet+burn_interval, family = Gamma, data=alpha, subset = substrate=='B')
+summary(glmsB) ### AIC: 71.484
+
+glmsB<- glm(Shannon ~ lndrainage_area+prc_wet+burn_interval+tempC_mean, family = Gamma, data=alpha, subset = substrate=='B')
+summary(glmsB) ### AIC: 68.913 
+
+###### BEST FIT FOR EPILITHON SHANNON ###################
+glmsB<- glm(Shannon ~ lndrainage_area*prc_wet+tempC_mean, family = Gamma, data=alpha, subset = substrate=='B')
+summary(glmsB) ### AIC: 68.796 ####### LOWEST FOR BIOFILM SHANNON
+#################################################################################
+
+glmsB<- glm(Shannon ~ lndrainage_area*prc_wet+burn_interval, family = Gamma, data=alpha, subset = substrate=='B')
+summary(glmsB) ### AIC: 70.884
+
+#################################################################################
+####### sediment
+###### BEST FIT FOR SEDIMENT SHANNON ###################
+glmsS<- glm(Shannon ~ lndrainage_area, family = Gamma, data=alpha, subset = substrate=='S')
+summary(glmsS) ### AIC: 112.51 LOWEST
+##############################################################
+
+glmsS<- glm(Shannon ~ lndrainage_area+prc_wet, family = Gamma, data=alpha, subset = substrate=='S')
+summary(glmsS) ### AIC: 114.48
+
+glmsS<- glm(Shannon ~ lndrainage_area*prc_wet, family = Gamma, data=alpha, subset = substrate=='S')
+summary(glmsS) ### AIC: 116.25
+
+glmsS<- glm(Shannon ~ lndrainage_area+prc_wet+burn_interval, family = Gamma, data=alpha, subset = substrate=='S')
+summary(glmsS) #### AIC: 114.4
+
+glmsS<- glm(Shannon ~ lndrainage_area+prc_wet+burn_interval+tempC_mean, family = Gamma, data=alpha, subset = substrate=='S')
+summary(glmsS) ### AIC: 116.39
+
+glmsS<- glm(Shannon ~ lndrainage_area*prc_wet+tempC_mean, family = Gamma, data=alpha, subset = substrate=='S')
+summary(glmsS) ### AIC: 118.14
+
+glmsS<- glm(Shannon ~ lndrainage_area*prc_wet+burn_interval, family = Gamma, data=alpha, subset = substrate=='S')
+summary(glmsS) ### AIC: 116.18
+
+#########################################################################################################
+```
+
+# TAXONOMIC COMPOSITION:
+PHYLUM ~ class ~ family
+Taxonomy table
+```{r}
+#setwd("/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs")
+#make taxonomy object by phylum
+phyla_counts_tab <- otu_table(tax_glom(pseqtest, taxrank="Phylum"), taxa_are_rows = FALSE)
+phyla_counts_tab <- t(phyla_counts_tab)
+#make vector of phyla names to set as row names
+phyla_tax_vec <- as.vector(tax_table(tax_glom(pseqtest, taxrank="Phylum"))[,2]) 
+rownames(phyla_counts_tab) <- as.vector(phyla_tax_vec)
+phyla_counts_tab
+write.csv(phyla_counts_tab, 'phyla_counts_rar_03.08.2025.csv')
+          
+```
+
+```{r}
+asv_counts <- pseqtest@otu_table
+#determine the number of unclassified seqs at the phylum level
+unclassified_tax_counts <- colSums(t(asv_counts)) - colSums(phyla_counts_tab)
+#Add a row of "unclassified" to the phylum count table
+phyla_and_unidentified_counts_tab <- rbind(phyla_counts_tab, "Unclassified_Phylum"=unclassified_tax_counts)
+
+```
+### split Ascomycota into classes
+```{r}
+#remove p__Ascomycota for the purpose of separating it into classes later
+temp_major_taxa_counts_tab <- 
+  phyla_and_unidentified_counts_tab[!row.names(phyla_and_unidentified_counts_tab)
+                                    %in% "p__Ascomycota",]
+#make count table broken down by class
+class_counts_tab <- otu_table(tax_glom(t(pseqtest), taxrank="Class"))
+#make table containing phylum and class data
+class_tax_phy_tab <- tax_table(tax_glom(t(pseqtest), taxrank="Class"))
+phy_tmp_vec <- class_tax_phy_tab[,2]
+class_tmp_vec <- class_tax_phy_tab[,3]
+rows_tmp <- row.names(class_tax_phy_tab)
+class_tax_tab <- data.frame("Phylum"=phy_tmp_vec, "Class"=class_tmp_vec, row.names = rows_tmp)
+#make vector of just the p__Ascomycota classes
+asco_classes_vec <- as.vector(class_tax_tab[class_tax_tab$Phylum == "p__Ascomycota", "Class"])
+row.names(class_counts_tab) <- as.vector(class_tax_tab$Class)
+#make table of p__Ascomycota classes
+asco_class_counts_tab <- class_counts_tab[row.names(class_counts_tab) %in% asco_classes_vec, ]
+#make table of p__Ascomycota not identified to the class level
+asco_no_class_annotated_counts <- 
+  phyla_and_unidentified_counts_tab[row.names(phyla_and_unidentified_counts_tab) %in% "p__Ascomycota",]-
+  colSums(asco_class_counts_tab)
+#Now combine the tables
+major_taxa_counts_tab <- rbind(temp_major_taxa_counts_tab, asco_class_counts_tab,
+                               "Unclassified_Ascomycetes"=asco_no_class_annotated_counts)
+head(major_taxa_counts_tab)
+
+```
+
+
+```{r}
+write.csv(major_taxa_counts_tab, "majortaxa_count_rar_03.08.2025.csv")
+#Check that all sequences are accounted for
+identical(colSums(major_taxa_counts_tab), rowSums(asv_counts))
+## [1] TRUE
+#Convert totals to relative abundance
+major_taxa_proportions_tab <- apply(major_taxa_counts_tab, 2, function(x) x/sum(x)*100)
+#colSums(major_taxa_proportions_tab)
+write.csv(major_taxa_proportions_tab, "majortaxa_relative abundance_rar_03.08.2025col.csv")
+
+```
+
+
+by family
+```{r}
+#make taxonomy object by genus
+family_counts_tab <- otu_table(tax_glom(pseqtest, taxrank="Family"), taxa_are_rows = FALSE)
+family_counts_tab <- t(family_counts_tab)
+#make vector of genus names to set as row names
+family_tax_vec <- as.vector(tax_table(tax_glom(pseqtest, taxrank="Family"))[,5]) 
+rownames(family_counts_tab) <- as.vector(family_tax_vec)
+
+#determine the number of unclassified seqs at the family level
+unclassified_family_counts <- colSums(t(asv_counts)) - colSums(family_counts_tab)
+unclassified_family_counts
+#Add a row of "unclassified" to the family count table
+family_and_unidentified_counts_tab <- rbind(family_counts_tab, 
+                                            "Unclassified_family"=unclassified_family_counts)
+write.csv(family_and_unidentified_counts_tab, "family raw abundance_rar.csv")
+#Check that all seqs are accounted for.
+
+identical(colSums(family_and_unidentified_counts_tab), rowSums(asv_counts))
+
+#Convert totals to relative abundance
+family_proportions_tab <- apply(family_and_unidentified_counts_tab, 2, function(x) x/sum(x)*100)
+write.csv(family_proportions_tab, "family relative abundance_rar.csv")
+
+```
+
+
+```{r}
+#Merge metadata, phylum, and family abundances
+#phy_and_fam <- merge(t(major_taxa_counts_tab), t(family_and_unidentified_counts_tab),
+#                  by="row.names", all=TRUE)
+phy_and_fam <- merge(t(major_taxa_proportions_tab), t(family_proportions_tab),
+                  by="row.names", all=TRUE)
+phyfam <- phy_and_fam[,-1]
+rownames(phyfam) <- phy_and_fam[,1]
+tax_merge <- merge(samdftest, phyfam,
+                  by="row.names", all=TRUE)
+taxmerge <- tax_merge[,-1]
+rownames(taxmerge) <- tax_merge[,1]
+write.csv(tax_merge, "1216R_03.08.2025_taxmerge.csv")
+
+```
+
+## summary stats about major taxa
+```{r}
+colnames(taxmerge)
+
+### SUMMARY ACROSS ALL SAMPLES
+
+mean(rowSums(taxmerge[,c("c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Orbiliomycetes","c__Pezizomycotina_cls_Incertae_sedis","c__Saccharomycetes","c__Lecanoromycetes","c__Pezizomycetes","c__Laboulbeniomycetes","c__Taphrinomycetes","c__Schizosaccharomycetes","c__Candelariomycetes","c__Arthoniomycetes","c__Geoglossomycetes","Unclassified_Ascomycetes")]))
+sd(rowSums(taxmerge[,c("c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Orbiliomycetes","c__Pezizomycotina_cls_Incertae_sedis","c__Saccharomycetes","c__Lecanoromycetes","c__Pezizomycetes","c__Laboulbeniomycetes","c__Taphrinomycetes","c__Schizosaccharomycetes","c__Candelariomycetes","c__Arthoniomycetes","c__Geoglossomycetes","Unclassified_Ascomycetes")]))
+
+### SUMMARY ACROSS LEAF SAMPLES
+###mean/sd percent abundance of Ascomycota in leaf
+mean(rowSums(taxmerge[taxmerge$substrate=='L',c("c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Orbiliomycetes","c__Pezizomycotina_cls_Incertae_sedis","c__Saccharomycetes","c__Lecanoromycetes","c__Pezizomycetes","c__Laboulbeniomycetes","c__Taphrinomycetes","c__Schizosaccharomycetes","c__Candelariomycetes","c__Arthoniomycetes","c__Geoglossomycetes","Unclassified_Ascomycetes")]))
+sd(rowSums(taxmerge[taxmerge$substrate=='L',c("c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Orbiliomycetes","c__Pezizomycotina_cls_Incertae_sedis","c__Saccharomycetes","c__Lecanoromycetes","c__Pezizomycetes","c__Laboulbeniomycetes","c__Taphrinomycetes","c__Schizosaccharomycetes","c__Candelariomycetes","c__Arthoniomycetes","c__Geoglossomycetes","Unclassified_Ascomycetes")]))
+######################################################
+
+### SUMMARY ACROSS EPILITHON SAMPLES
+###mean/sd percent abundance of Ascomycota in epilithon
+mean(rowSums(taxmerge[taxmerge$substrate=='B',c("c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Orbiliomycetes","c__Pezizomycotina_cls_Incertae_sedis","c__Saccharomycetes","c__Lecanoromycetes","c__Pezizomycetes","c__Laboulbeniomycetes","c__Taphrinomycetes","c__Schizosaccharomycetes","c__Candelariomycetes","c__Arthoniomycetes","c__Geoglossomycetes","Unclassified_Ascomycetes")]))
+sd(rowSums(taxmerge[taxmerge$substrate=='B',c("c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Orbiliomycetes","c__Pezizomycotina_cls_Incertae_sedis","c__Saccharomycetes","c__Lecanoromycetes","c__Pezizomycetes","c__Laboulbeniomycetes","c__Taphrinomycetes","c__Schizosaccharomycetes","c__Candelariomycetes","c__Arthoniomycetes","c__Geoglossomycetes","Unclassified_Ascomycetes")]))
+######################################################
+
+### SUMMARY ACROSS SEDIMENT SAMPLES
+###mean/sd percent abundance of Ascomycota in sediment
+mean(rowSums(taxmerge[taxmerge$substrate=='S',c("c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Orbiliomycetes","c__Pezizomycotina_cls_Incertae_sedis","c__Saccharomycetes","c__Lecanoromycetes","c__Pezizomycetes","c__Laboulbeniomycetes","c__Taphrinomycetes","c__Schizosaccharomycetes","c__Candelariomycetes","c__Arthoniomycetes","c__Geoglossomycetes","Unclassified_Ascomycetes")]))
+sd(rowSums(taxmerge[taxmerge$substrate=='S',c("c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes","c__Orbiliomycetes","c__Pezizomycotina_cls_Incertae_sedis","c__Saccharomycetes","c__Lecanoromycetes","c__Pezizomycetes","c__Laboulbeniomycetes","c__Taphrinomycetes","c__Schizosaccharomycetes","c__Candelariomycetes","c__Arthoniomycetes","c__Geoglossomycetes","Unclassified_Ascomycetes")]))
+
+###non-ascomycetes in sediment
+mean(rowSums(taxmerge[taxmerge$substrate=='S',c("p__Basidiomycota","p__Blastocladiomycota","p__Mortierellomycota","p__Kickxellomycota","p__Rozellomycota","p__Aphelidiomycota","p__Basidiobolomycota","p__Chytridiomycota","p__Mucoromycota","p__Calcarisporiellomycota","p__Olpidiomycota","p__Glomeromycota","p__Neocallimastigomycota","p__Entorrhizomycota","Unclassified_Phylum")]))
+sd(rowSums(taxmerge[taxmerge$substrate=='S',c("p__Basidiomycota","p__Blastocladiomycota","p__Mortierellomycota","p__Kickxellomycota","p__Rozellomycota","p__Aphelidiomycota","p__Basidiobolomycota","p__Chytridiomycota","p__Mucoromycota","p__Calcarisporiellomycota","p__Olpidiomycota","p__Glomeromycota","p__Neocallimastigomycota","p__Entorrhizomycota","Unclassified_Phylum")]))
+
+
+### basidiomycota in sediment
+mean(taxmerge[taxmerge$substrate=='S',c("p__Basidiomycota")])
+sd(taxmerge[taxmerge$substrate=='S',c("p__Basidiomycota")])
+
+### blastocladiomycota in sediment
+mean(taxmerge[taxmerge$substrate=='S',c("p__Blastocladiomycota")])
+sd(taxmerge[taxmerge$substrate=='S',c("p__Blastocladiomycota")])
+
+### Mortierellomycota in sediment
+mean(taxmerge[taxmerge$substrate=='S',c("p__Mortierellomycota")])
+sd(taxmerge[taxmerge$substrate=='S',c("p__Mortierellomycota")])
+
+### Kickxellomycota in sediment
+mean(taxmerge[taxmerge$substrate=='S',c("p__Kickxellomycota")])
+sd(taxmerge[taxmerge$substrate=='S',c("p__Kickxellomycota")])
+
+### rozellomycota in sediment
+mean(taxmerge[taxmerge$substrate=='S',c("p__Rozellomycota")])
+sd(taxmerge[taxmerge$substrate=='S',c("p__Rozellomycota")])
+
+### no phylum in sediment
+mean(taxmerge[taxmerge$substrate=='S',c("Unclassified_Phylum")])
+sd(taxmerge[taxmerge$substrate=='S',c("Unclassified_Phylum")])
+
+### trace levels of zoosporic fungi
+#mean(taxmerge$p__Neocallimastigomycota)
+#sd(taxmerge$p__Neocallimastigomycota)
+mean(taxmerge$p__Rozellomycota)
+sd(taxmerge$p__Rozellomycota)
+mean(taxmerge$p__Aphelidiomycota)
+sd(taxmerge$p__Aphelidiomycota)
+mean(taxmerge$p__Basidiobolomycota)
+sd(taxmerge$p__Basidiobolomycota)
+mean(taxmerge$p__Chytridiomycota)
+sd(taxmerge$p__Chytridiomycota)
+mean(taxmerge$p__Mucoromycota)
+sd(taxmerge$p__Mucoromycota)
+
+mean(taxmerge$c__Dothideomycetes)
+sd(taxmerge$c__Dothideomycetes)
+
+#mean(taxmerge[,97])
+#sd(taxmerge[,97])
+
+### identifying sites with neocallimastigomycetes
+neocalsites<- taxmerge[taxmerge$p__Neocallimastigomycota>0,]
+neocalsites$siteid
+```
+
+###Phylum-Class BARPLOT
+```{r}
+#Phylum
+#Select taxa that make up >90% of the total sequences
+phylatrim <- data.frame(major_taxa_proportions_tab[c("p__Basidiomycota","p__Mortierellomycota","p__Blastocladiomycota","p__Aphelidiomycota","p__Kickxellomycota","p__Rozellomycota","Unclassified_Phylum","c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes", "Unclassified_Ascomycetes"
+                                                     #, "p__Ochrophyta", "p__Oomycota"
+                                                     ), ])
+#write.csv(phylatrim_t,"/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs/phylatrim.csv")
+#write.csv(major_taxa_proportions_tab,"/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/majortaxa.csv")
+#majortaxa <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/majortaxa.csv", row.names=1)
+#View(majortaxa)
+#phylatrim <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/phylatrimt.csv", row.names=1)
+#View(phylatrim)
+
+#Create an "other" category for the phyla not retained
+filtered_proportions <- colSums(major_taxa_proportions_tab) - 
+  colSums(phylatrim)
+phylatrim <- rbind(phylatrim, "Other"=filtered_proportions)
+phylatrim
+
+#Add taxa names as a column
+phylatrim$Major_Taxa <- row.names(phylatrim)
+#transform into long format
+phylalong <- gather(phylatrim, Sample, Proportion, -Major_Taxa)
+phylalong$Sample <- gsub("X","",phylalong$Sample)
+#add metadata
+#metadatap <- read.csv("~/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/metadata_punc.csv", row.names=1, stringsAsFactors=TRUE)
+#View(metadata_punc)
+#names(metadatap)
+```
+
+```{r}
+## [1] "substrate" "WetDry"
+phylamet<-data.frame("Sample"=row.names(samdftest),
+                     "Substrate"=samdftest$substrate,
+                     "Wet.Dry"=samdftest$wet_dry,
+                     stringsAsFactors=T)
+#merge metadata with major taxa data
+phylalong <- merge(phylalong, phylamet)
+#Summarize by depth and hydration
+phyla_summary <- 
+  phylalong %>% # the names of the new data frame and the data frame to be summarised
+  group_by(Substrate, Wet.Dry, Major_Taxa) %>%   # the grouping variable
+  summarise(mean_prop = mean(Proportion))  # calculates the mean of each group
+## `summarise()` has grouped output by 'Depth', 'Hydration'. You can override using the `.groups` argument.
+phyla_summary
+
+phyla_summary$Substrate <- factor(phyla_summary$Substrate,
+                                 levels=c("B","L","S")) #reorder variables
+phyla_summary$Wet.Dry <- factor(phyla_summary$Wet.Dry, levels= c("WET","DRY")) #reorder variables
+phyla_summary$Major_Taxa <- factor(phyla_summary$Major_Taxa, levels= rev(c("p__Basidiomycota","p__Mortierellomycota","p__Blastocladiomycota","p__Aphelidiomycota","p__Kickxellomycota","p__Rozellomycota","Unclassified_Phylum","c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes", "Unclassified_Ascomycetes", #"p__Ochrophyta", "p__Oomycota",
+                                                                           "Other")))
+#color palette
+
+
+sublab<- c("Epilithic biofilms","Leaf litter","Benthic sediment")
+names(sublab)<- c("B","L","S")
+
+pal12 <- rev(cols25(n=13)) #set n= to the number of taxa you are plotting
+#make stacked bar plot
+phylum_bar <- ggplot(phyla_summary, aes(x = Wet.Dry, y = mean_prop, fill = Major_Taxa))+
+  geom_bar(stat = "identity", col=I("black")) +
+  scale_fill_manual(values=pal12)+
+  guides(fill=guide_legend(ncol=1))+
+  facet_wrap(~Substrate, labeller = labeller(Substrate=sublab), nrow=1, scales="free_x") +
+  labs(x=NULL,y="Relative abundance (%)",
+       fill="Major taxa")+
+  #scale_facet_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+  theme(axis.text.x = element_text(angle=60, hjust=1), legend.position = "right")+
+  theme(text=element_text(size=18), #change font size of all text
+        axis.text=element_text(size=16), #change font size of axis text
+        axis.title=element_text(size=16), #change font size of axis titles
+        plot.title=element_text(size=16), #change font size of plot title
+        legend.text=element_text(size=16), #change font size of legend text
+        strip.text.x = element_text(size = 16),
+        legend.title=element_text(size=16)) #change font size of legend title  
+phylum_bar
+ 
+#c(180,100) *
+#  0.0394 * # convert mm to inch
+#  600 # convert to pixels
+## [1] 4255.2 2364.0
+plotout <- "Phylum Barplot_fungi_WetDry_v1_03082025.tiff"
+agg_tiff(filename=plotout, width=4255, height=2364, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+phylum_bar
+invisible(dev.off())
+```
+
+```{r}
+## [1] "substrate" "PRC_WET_GROUP", sites kmeans clustered by annual percent wet (k=3)
+phylamet<-data.frame("Sample"=row.names(samdftest),
+                     "Substrate"=samdftest$substrate,
+                     "Site"=samdftest$siteid,
+                     stringsAsFactors=T)
+#merge metadata with major taxa data
+phylalong <- merge(phylalong, phylamet)
+phylamet<-data.frame("Sample"=row.names(samdftest),
+                     "Drainage_area"=samdftest$drainage_area,
+                     "Annual_Percent_Wet"=samdftest$prc_wet)
+#merge metadata with major taxa data
+phylalong <- merge(phylalong, phylamet)
+#Summarize by depth and hydration
+phyla_summary <- 
+  phylalong %>% # the names of the new data frame and the data frame to be summarised
+  group_by(Substrate, Site, Major_Taxa) %>%   # the grouping variable
+  summarise(mean_prop = mean(Proportion), drainage_area = Drainage_area) #%>%
+ # summarise(drainage_area = Drainage_area)# calculates the mean of each group
+## `summarise()` has grouped output by 'Depth', 'Hydration'. You can override using the `.groups` argument.
+phyla_summary
+
+phyla_summary$Substrate <- factor(phyla_summary$Substrate,
+                                 levels=c("B","L","S")) #reorder variables
+phyla_summary$Site <- fct_reorder(phyla_summary$Site, phyla_summary$drainage_area)
+  
+  #factor(phyla_summary$wet_dist_cluster, levels= c("1","2", "3")) #reorder variables
+phyla_summary$Major_Taxa <- factor(phyla_summary$Major_Taxa, levels= rev(c("p__Basidiomycota","p__Mortierellomycota","p__Blastocladiomycota","p__Aphelidiomycota","p__Kickxellomycota","p__Rozellomycota","Unclassified_Phylum","c__Dothideomycetes","c__Leotiomycetes","c__Sordariomycetes","c__Eurotiomycetes", "Unclassified_Ascomycetes", #"p__Ochrophyta", "p__Oomycota",
+                                                                           "Other")))
+#color palette
+
+
+sublab<- c("Epilithic biofilms","Leaf litter","Benthic sediment")
+names(sublab)<- c("B","L","S")
+
+pal12 <- rev(cols25(n=13)) #set n= to the number of taxa you are plotting
+#make stacked bar plot 
+phylum_bar <- ggplot(phyla_summary, aes(x = Site, y = mean_prop, fill = Major_Taxa))+
+  geom_bar(stat = "identity", col=I("black")) +
+  scale_fill_manual(values=pal12)+
+  guides(fill=guide_legend(ncol=1))+
+  facet_wrap(~Substrate, labeller = labeller(Substrate=sublab), nrow=1, scales="free_x") +
+  labs(x="Sites (ordered from lowest to highest drainage area)",y="Relative abundance (%)",
+       fill="Major taxa")+
+  #scale_facet_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+  theme(axis.text.x = element_text(angle=60, hjust=1), legend.position = "right")+
+  theme(text=element_text(size=20), #change font size of all text
+        axis.text.x=element_text(size=7), #change font size of axis text
+       # axis.title=element_text(size=16), #change font size of axis titles
+        #plot.title=element_text(size=16), #change font size of plot title
+        legend.text=element_text(size=16), #change font size of legend text
+       # strip.text.x = element_text(size = 10),
+        legend.title=element_text(size=16)) #change font size of legend title  
+phylum_bar
+ 
+#c(180,100) *
+#  0.0394 * # convert mm to inch
+#  600 # convert to pixels
+## [1] 4255.2 2364.0
+plotout <- "Phylum Barplot_fungi_sites_by_drainage_area_03142025.tiff"
+agg_tiff(filename=plotout, width=6000, height=2750, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+phylum_bar
+invisible(dev.off())
+```
+
+
+
+### Differential abundance analysis via GLLVM (generalized linear latent variable models)
+```{r}
+library(stringr)
+## making new phyloseq object to play with
+pseqtestITS_spp <- pseqtest
+
+### trimming prefixes off taxa 
+tax_table(pseqtestITS_spp)[,"Species"] <- sapply(str_replace(tax_table(pseqtestITS_spp)[,"Species"], "s__", ""),`[`, 1)
+tax_table(pseqtestITS_spp)[,"Genus"] <- sapply(str_replace(tax_table(pseqtestITS_spp)[,"Genus"], "g__", ""),`[`, 1)
+tax_table(pseqtestITS_spp)[,"Family"] <- sapply(str_replace(tax_table(pseqtestITS_spp)[,"Family"], "f__", ""),`[`, 1)
+tax_table(pseqtestITS_spp)[,"Order"] <- sapply(str_replace(tax_table(pseqtestITS_spp)[,"Order"], "o__", ""),`[`, 1)
+tax_table(pseqtestITS_spp)[,"Class"] <- sapply(str_replace(tax_table(pseqtestITS_spp)[,"Class"], "c__", ""),`[`, 1)
+tax_table(pseqtestITS_spp)[,"Phylum"] <- sapply(str_replace(tax_table(pseqtestITS_spp)[,"Phylum"], "p__", ""),`[`, 1)
+tax_table(pseqtestITS_spp)[,"Kingdom"] <- sapply(str_replace(tax_table(pseqtestITS_spp)[,"Kingdom"], "k__", ""),`[`, 1)
+
+### Now we want to merge our taxa to the lowest possible taxonomic level (species, or genus, or family, etc.)
+
+### Name NA spp. "sp."
+na.sp = !is.na(tax_table(pseqtestITS_spp)[,"Genus"]) & is.na(tax_table(pseqtestITS_spp)[,"Species"])
+tax_table(pseqtestITS_spp)[na.sp][,"Species"] <- "sp."
+### good
+
+### Now, make "Species" <--- "Genus species"
+# Genus and Species is not NA
+no.na <- !is.na(tax_table(pseqtestITS_spp)[,"Genus"]) & !is.na(tax_table(pseqtestITS_spp)[,"Species"])
+# Replace Species with full name
+tax_table(pseqtestITS_spp)[no.na][,"Species"] <- paste(tax_table(pseqtestITS_spp)[no.na][,"Genus"], tax_table(pseqtestITS_spp)[no.na][,"Species"])
+
+### Now, if genus and species are NA, how to name it for the taxonomic ranking?
+```
+
+```{r}
+View(tax_table(pseqtestITS_spp))
+
+### agglomerate counts by pseudospecies
+spp_counts_tab <- otu_table(tax_glom(pseqtestITS_spp, taxrank = "Species"), taxa_are_rows = FALSE)
+spp_counts_tab <- t(spp_counts_tab)
+#make vector of species names to set as row names
+spp_tax_vec <- as.vector(tax_table(tax_glom(pseqtestITS_spp, taxrank="Species"))[,7]) 
+rownames(spp_counts_tab) <- as.vector(spp_tax_vec)
+#spp_counts_tab
+#write.csv(spp_counts_tab, 'spp_counts_rar.csv')
+
+asv_counts <- pseqtestITS_spp@otu_table
+#determine the number of unclassified seqs at the species level
+unclassified_spp_counts <- colSums(t(asv_counts)) - colSums(spp_counts_tab)
+#Add a row of "unclassified" to the species count table
+species_and_unidentified_counts_tab <- rbind(spp_counts_tab, "Unclassified_species"=unclassified_spp_counts)
+
+## test all counts are accounted for
+identical(colSums(species_and_unidentified_counts_tab), rowSums(asv_counts))
+
+
+## convert counts to percent abundance:
+#species_proportions <- apply(species_and_unidentified_counts_tab, 2, function(x) x/sum(x)*100)
+
+#Merge with metadata
+species_merge <- merge(t(species_and_unidentified_counts_tab), samdftest,
+                  by="row.names", all=TRUE)
+rownames(species_merge) <- species_merge[,1]
+species_merge <- species_merge[,-1]
+
+#species_merge <- merge(species_merge, alpha[,94:102],
+#                  by="row.names", all=TRUE)
+#rownames(species_merge) <- species_merge[,1]
+#species_merge <- species_merge[,-1]
+
+write.csv(species_merge, "KzSyn_ITS_pseudospeciescountsmerge_03082025.csv")
+```
+
+gglvm of top leaf taxa
+
+```{r}
+library(mvabund)
+library(gllvm)
+library(tidyverse)
+
+species_merge$annual_percent_wet<- species_merge$prc_wet
+
+sppmerge_L<- species_merge[species_merge$substrate=='L',]
+sppmerge_L<- sppmerge_L[!is.na(sppmerge_L$alpha.cent.wt),]
+gn<- nrow(species_and_unidentified_counts_tab)
+gn
+
+spptemp_L<- sppmerge_L[,1:gn]
+spptemp_L<-spptemp_L[,colSums(spptemp_L)>0]
+#Reorder data table from most abundant to least abundant
+spptemp_L <- spptemp_L[,order(colSums(-spptemp_L,na.rm=TRUE))]
+spptemp_L <- spptemp_L[,apply(spptemp_L,2,function(x) sum(x > 0))>1]
+
+
+sppmerge_L <- merge(spptemp_L, samdftest,
+                  by="row.names", all=FALSE)
+rownames(sppmerge_L) <- sppmerge_L[,1]
+sppmerge_L <- sppmerge_L[,-1]
+sppmerge_L<- sppmerge_L[,colnames(sppmerge_L)!="Unclassified_species"]
+sppmerge_L$annual_percent_wet<- sppmerge_L$prc_wet
+#detach("package:linkET", unload=TRUE)
+#sppmerge_L$percentwet_11month<- sppmerge_L$percentwet_bonus
+L_abun<-sppmerge_L[,1:40]
+X <- as.matrix(sppmerge_L[,c("annual_percent_wet","alpha.cent.wt","tempC_mean","burn_interval")])
+y<-as.matrix(as.tibble(L_abun))
+
+gllvm(y, family = "poisson") 
+gllvm(y, family = "negative.binomial") 
+
+###
+gllvm(y, X, family = "negative.binomial", num.lv = 1,
+                 formula = ~ alpha.cent.wt+annual_percent_wet
+                 , seed = 1995)
+
+#fit_ord<- gllvm(y, family = "negative.binomial")
+#ordiplot(fit_ord, biplot=TRUE, ind.spp=14)
+
+fit_env <- gllvm(y, X, family = "negative.binomial", num.lv = 1,
+                 formula = ~ alpha.cent.wt+annual_percent_wet
+                 , seed = 1995)
+coefplot(fit_env, cex.ylab = 0.7, mar = c(4, 9, 2, 1), mfrow=c(1,1))
+
+pdf("Pseudospeciesplot_L_03.15.2025.pdf", 
+    )
+coefplot(fit_env, cex.ylab = 0.7, mar = c(4, 12, 2, 1), mfrow=c(1,1))
+dev.off()
+```
+
+```{r}
+sppmerge_B<- species_merge[species_merge$substrate=='B',]
+sppmerge_B<- sppmerge_B[!is.na(sppmerge_B$alpha.cent.wt),]
+gn<- nrow(species_and_unidentified_counts_tab)
+gn
+
+spptemp_B<- sppmerge_B[,1:gn]
+spptemp_B<-spptemp_B[,colSums(spptemp_B)>0]
+#Reorder data table from most abundant to least abundant
+spptemp_B <- spptemp_B[,order(colSums(-spptemp_B,na.rm=TRUE))]
+spptemp_B <- spptemp_B[,apply(spptemp_B,2,function(x) sum(x > 0))>1]
+
+
+sppmerge_B <- merge(spptemp_B, samdftest,
+                  by="row.names", all=FALSE)
+rownames(sppmerge_B) <- sppmerge_B[,1]
+sppmerge_B <- sppmerge_B[,-1]
+sppmerge_B<- sppmerge_B[,colnames(sppmerge_B)!="Unclassified_species"]
+
+sppmerge_B$annual_percent_wet<- sppmerge_B$prc_wet
+
+B_abun<-sppmerge_B[,1:40]
+X <- scale(as.matrix(sppmerge_B[,c("alpha.cent.wt","annual_percent_wet","tempC_mean","burn_interval","canopy_cover_percent"
+                                   )]))
+y<-as.matrix(as.tibble(B_abun))
+
+gllvm(y, family = "poisson")
+gllvm(y, family = "negative.binomial")
+
+gllvm(y, X, family = "negative.binomial", num.lv = 1,
+                 formula = ~ alpha.cent.wt+annual_percent_wet
+                 , seed = 1995)
+
+fit_env <- gllvm(y, X, family = "negative.binomial", num.lv = 1,
+                 formula = ~ alpha.cent.wt+annual_percent_wet
+                 , seed = 1995)
+coefplot(fit_env, cex.ylab = 0.7, mar = c(4, 9, 2, 1), mfrow=c(1,1))
+
+pdf("Pseudospeciesplot_B_03.15.2025.pdf", 
+    )
+coefplot(fit_env, cex.ylab = 0.7, mar = c(4, 12, 2, 1), mfrow=c(1,1))
+dev.off()
+```
+
+```{r}
+sppmerge_S<- species_merge[species_merge$substrate=='S',]
+sppmerge_S<- sppmerge_S[!is.na(sppmerge_S$alpha.cent.wt),]
+gn<- nrow(species_and_unidentified_counts_tab)
+gn
+
+spptemp_S<- sppmerge_S[,1:gn]
+spptemp_S<-spptemp_S[,colSums(spptemp_S)>0]
+#Reorder data table from most abundant to least abundant
+spptemp_S <- spptemp_S[,order(colSums(-spptemp_S,na.rm=TRUE))]
+spptemp_S <- spptemp_S[,apply(spptemp_S,2,function(x) sum(x > 0))>1]
+
+
+sppmerge_S <- merge(spptemp_S, samdftest,
+                  by="row.names", all=FALSE)
+rownames(sppmerge_S) <- sppmerge_S[,1]
+sppmerge_S <- sppmerge_S[,-1]
+sppmerge_S<- sppmerge_S[,colnames(sppmerge_S)!="Unclassified_species"]
+sppmerge_S$annual_percent_wet<- sppmerge_S$prc_wet
+
+S_abun<-sppmerge_S[,1:40]
+X <- as.matrix(sppmerge_S[,c("annual_percent_wet","alpha.cent.wt","tempC_mean","B_Chl.a_ug_per_cm2")])
+y<-as.matrix(as.tibble(S_abun))
+
+gllvm(y, family = "poisson")
+gllvm(y, family = "negative.binomial")
+fit_ord<- gllvm(y, family = "negative.binomial")
+ordiplot(fit_ord, biplot=TRUE, ind.spp=14)
+
+gllvm(y, X, family = "negative.binomial", num.lv = 1,
+                 formula = ~ alpha.cent.wt+annual_percent_wet
+                 , seed = 1234)
+
+fit_env <- gllvm(y, X, family = "negative.binomial", num.lv = 1,
+                 formula = ~ alpha.cent.wt+annual_percent_wet
+                 , seed = 1234)
+coefplot(fit_env, cex.ylab = 0.7, mar = c(4, 9, 2, 1), mfrow=c(1,1))
+
+pdf("Pseudospeciesplot_S_03.15.2025.pdf", 
+    )
+coefplot(fit_env, cex.ylab = 0.7, mar = c(4, 12, 2, 1), mfrow=c(1,1))
+dev.off()
+```
+
+
+```{r}
+# TAXONOMIC COMPOSITION: Genus level
+
+#setwd("/Users/chunk/Documents/DADA2/DADA2_package_test/Kz_Syn_ITS/run_2/outputs")
+#make taxonomy object by genus
+gen_counts_tab <- otu_table(tax_glom(pseqtest, taxrank = "Genus"), taxa_are_rows = FALSE)
+gen_counts_tab <- t(gen_counts_tab)
+#make vector of genus names to set as row names
+gen_tax_vec <- as.vector(tax_table(tax_glom(pseqtest, taxrank="Genus"))[,6]) 
+rownames(gen_counts_tab) <- as.vector(gen_tax_vec)
+#gen_counts_tab
+#write.csv(gen_counts_tab, 'gen_counts_rar.csv')
+
+asv_counts <- pseqtest@otu_table
+#determine the number of unclassified seqs at the genus level
+unclassified_gen_counts <- colSums(t(asv_counts)) - colSums(gen_counts_tab)
+#Add a row of "unclassified" to the genus count table
+genus_and_unidentified_counts_tab <- rbind(gen_counts_tab, "Unclassified_genus"=unclassified_gen_counts)
+
+## test all counts are accounted for
+identical(colSums(genus_and_unidentified_counts_tab), rowSums(asv_counts))
+
+## convert counts to percent abundance:
+genus_proportions <- apply(genus_and_unidentified_counts_tab, 2, function(x) x/sum(x)*100)
+
+#Merge metadata
+#phy_and_fam <- merge(t(major_taxa_counts_tab), t(family_and_unidentified_counts_tab),
+#                  by="row.names", all=TRUE)
+genus_merge <- merge(t(genus_proportions), samdftest,
+                  by="row.names", all=TRUE)
+rownames(genus_merge) <- genus_merge[,1]
+genus_merge <- genus_merge[,-1]
+genus_merge <- merge(genus_merge, alpha[,94:103],
+                  by="row.names", all=TRUE)
+write.csv(genus_merge, "1216R_03.08.2025_genusmerge.csv")
+```
+
+## Supplementary table: top ten families by substrate
+## top 20 family
+```{r}
+fam<-t(family_proportions_tab)
+#fam <- fam[,-1]
+#rownames(phyfam) <- phy_and_fam[,1]
+#Merge metadata, phylum, and family abundances
+#phy_and_fam <- merge(t(major_taxa_counts_tab), t(family_and_unidentified_counts_tab),
+#                  by="row.names", all=TRUE)
+fam_merge <- merge(samdftest, fam,
+                  by="row.names", all=TRUE)
+rownames(fam_merge) <- fam_merge[,1]
+fam_merge <- fam_merge[,-1]
+
+### Just checking this out
+### "f__Pleosporaceae" in epilithon
+mean(fam_merge[fam_merge$substrate=='B',"f__Pleosporaceae"])
+sd(fam_merge[fam_merge$substrate=='B',"f__Pleosporaceae"])
+### "f__Pleosporaceae" in leaf
+mean(fam_merge[fam_merge$substrate=='L',"f__Pleosporaceae"])
+sd(fam_merge[fam_merge$substrate=='L',"f__Pleosporaceae"])
+### "f__Pleosporaceae" in sediment
+mean(fam_merge[fam_merge$substrate=='S',"f__Pleosporaceae"])
+sd(fam_merge[fam_merge$substrate=='S',"f__Pleosporaceae"])
+```
+Now, to generate tables with mean percent abundance and standard deviation for the top 20 families and genera in each substrate, we'll want to 1) seperate the datasets by substrate, 2) sort the families by average percent abuundance by substrate, and 3) then generate a table with means and st.dev. for each of the top 20.
+
+##Family, biofilm
+```{r}
+fam_merge_B <- fam_merge[fam_merge$substrate=='B',]
+fammertemp<- fam_merge_B[,96:ncol(fam_merge_B)]
+colnames(fammertemp) <- sapply(str_replace(colnames(fammertemp), "f__", ""),`[`, 1)
+
+#Reorder from most abundant to least abundant
+fammertemp <- fammertemp[,order(colSums(-fammertemp,na.rm=TRUE))]
+fammertemp<- fammertemp[,colnames(fammertemp)!="Unclassified_family"]
+fammertemp <-fammertemp[,1:20]
+
+fam_long_B <- gather(fammertemp, key = "Family", value = "Percent_Abundance")
+fam_long_B$Family <- factor(fam_long_B$Family, levels = names(sort(colMeans(fammertemp), decreasing = TRUE)))
+#fammertemp$fam<-row.names(fammertemp)
+#fammertemp$fam <- factor(fammertemp$fam, levels = fammertemp$fam[order(fammertemp$Mean_percent_abundance, decreasing = TRUE)])
+
+topfam_box_B<- ggplot(fam_long_B, aes(x=Family, y=Percent_Abundance))+
+  geom_boxplot()+#fill = "skyblue", color = "black") +
+  labs(y = "Percent Abundance", title = "Epilithic biofilms") +
+  theme_minimal() +
+    scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))  
+topfam_box_B
+
+#mean percent abundance for each family
+Mean_percent_abundance<-colMeans(fammertemp)
+St.Dev<- sapply(fammertemp, sd)
+name_rab<- colnames(fammertemp)
+
+### Table of family mean percent abundance & st. deviation
+topfam_table_B<- data.frame(#name_rab,
+  Mean_percent_abundance,St.Dev)
+#topfam_table_B<-topfam_table_B[topfam_table_B$Mean_percent_abundance>0,]
+topfam_table_B
+
+```
+
+##Family, leaf
+```{r}
+fam_merge_L <- fam_merge[fam_merge$substrate=='L',]
+fammertemp<- fam_merge_L[,96:ncol(fam_merge_L)]
+colnames(fammertemp) <- sapply(str_replace(colnames(fammertemp), "f__", ""),`[`, 1)
+
+#Reorder from most abundant to least abundant
+fammertemp <- fammertemp[,order(colSums(-fammertemp,na.rm=TRUE))]
+fammertemp<- fammertemp[,colnames(fammertemp)!="Unclassified_family"]
+fammertemp <-fammertemp[,1:20]
+
+fam_long_L <- gather(fammertemp, key = "Family", value = "Percent_Abundance")
+fam_long_L$Family <- factor(fam_long_L$Family, levels = names(sort(colMeans(fammertemp), decreasing = TRUE)))
+#fammertemp$fam<-row.names(fammertemp)
+#fammertemp$fam <- factor(fammertemp$fam, levels = fammertemp$fam[order(fammertemp$Mean_percent_abundance, decreasing = TRUE)])
+
+topfam_box_L<- ggplot(fam_long_L, aes(x=Family, y=Percent_Abundance))+
+  geom_boxplot()+#fill = "skyblue", color = "black") +
+  labs(y = "Percent Abundance", title = "Leaf litter") +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))  
+topfam_box_L
+
+#mean percent abundance for each family
+Mean_percent_abundance<-colMeans(fammertemp)
+St.Dev<- sapply(fammertemp, sd)
+name_rab<- colnames(fammertemp)
+
+### Table of family mean percent abundance & st. deviation
+topfam_table_L<- data.frame(#name_rab,
+  Mean_percent_abundance,St.Dev)
+#topfam_table_L<-topfam_table_L[topfam_table_L$Mean_percent_abundance>0,]
+topfam_table_L
+
+```
+
+##Family, sediment
+```{r}
+fam_merge_S <- fam_merge[fam_merge$substrate=='S',]
+fammertemp<- fam_merge_S[,96:ncol(fam_merge_S)]
+colnames(fammertemp) <- sapply(str_replace(colnames(fammertemp), "f__", ""),`[`, 1)
+
+#Reorder from most abundant to least abundant
+fammertemp <- fammertemp[,order(colSums(-fammertemp,na.rm=TRUE))]
+fammertemp<- fammertemp[,colnames(fammertemp)!="Unclassified_family"]
+fammertemp <-fammertemp[,1:20]
+
+fam_long_S <- gather(fammertemp, key = "Family", value = "Percent_Abundance")
+fam_long_S$Family <- factor(fam_long_S$Family, levels = names(sort(colMeans(fammertemp), decreasing = TRUE)))
+#fammertemp$fam<-row.names(fammertemp)
+#fammertemp$fam <- factor(fammertemp$fam, levels = fammertemp$fam[order(fammertemp$Mean_percent_abundance, decreasing = TRUE)])
+
+topfam_box_S<- ggplot(fam_long_S, aes(x=Family, y=Percent_Abundance))+
+  geom_boxplot()+#fill = "skyblue", color = "black") +
+  labs(y = "Percent Abundance", title = "Benthic sediment") +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))  
+topfam_box_S
+
+#mean percent abundance for each family
+Mean_percent_abundance<-colMeans(fammertemp)
+St.Dev<- sapply(fammertemp, sd)
+name_rab<- colnames(fammertemp)
+
+### Table of family mean percent abundance & st. deviation
+topfam_table_S<- data.frame(#name_rab,
+  Mean_percent_abundance,St.Dev)
+#topfam_table_S<-topfam_table_S[topfam_table_S$Mean_percent_abundance>0,]
+topfam_table_S
+```
+
+### top genera box plots
+
+```{r}
+gn<- nrow(genus_and_unidentified_counts_tab)+1
+library(stringr)
+
+### leaf genera proportions
+genmerge_L<- genus_merge[genus_merge$substrate=='L',]
+gentemp_L<- genmerge_L[,1:gn]
+colnames(gentemp_L) <- sapply(str_replace(colnames(gentemp_L), "g__", ""),`[`, 1)
+#colnames(gentemp_L)
+rownames(gentemp_L) <- gentemp_L[,1]
+gentemp_L <- gentemp_L[,-1]
+
+#Reorder data table from most abundant to least abundant
+gentemp_L <- gentemp_L[,order(colSums(-gentemp_L,na.rm=TRUE))]
+
+### Epilithon genera proportions
+### arranging top genera counts
+genmerge_B<- genus_merge[genus_merge$substrate=='B',]
+gentemp_B<- genmerge_B[,1:gn]
+colnames(gentemp_B) <- sapply(str_replace(colnames(gentemp_B), "g__", ""),`[`, 1)
+#colnames(gentemp_B)
+rownames(gentemp_B) <- gentemp_B[,1]
+gentemp_B <- gentemp_B[,-1]
+
+#Reorder data table from most abundant to least abundant
+gentemp_B <- gentemp_B[,order(colSums(-gentemp_B,na.rm=TRUE))]
+
+### Sediment genera proportions
+genmerge_S<- genus_merge[genus_merge$substrate=='S',]
+gentemp_S<- genmerge_S[,1:gn]
+colnames(gentemp_S) <- sapply(str_replace(colnames(gentemp_S), "g__", ""),`[`, 1)
+#colnames(gentemp_S)
+rownames(gentemp_S) <- gentemp_S[,1]
+gentemp_S <- gentemp_S[,-1]
+
+#Reorder data table from most abundant to least abundant
+gentemp_S <- gentemp_S[,order(colSums(-gentemp_S,na.rm=TRUE))]
+
+```
+
+##genus, biofilm
+```{r}
+
+gentemp_B<- gentemp_B[,colnames(gentemp_B)!="Unclassified_genus"]
+gentemp_Bt <-gentemp_B[,1:21]
+
+gen_long_B <- gather(gentemp_Bt, key = "Genus", value = "Percent_Abundance")
+gen_long_B$Genus <- factor(gen_long_B$Genus, levels = names(sort(colMeans(gentemp_Bt), decreasing = TRUE)))
+#fammertemp$fam<-row.names(fammertemp)
+#fammertemp$fam <- factor(fammertemp$fam, levels = fammertemp$fam[order(fammertemp$Mean_percent_abundance, decreasing = TRUE)])
+
+topgen_box_B<- ggplot(gen_long_B, aes(x=Genus, y=Percent_Abundance))+
+  geom_boxplot()+#fill = "skyblue", color = "black") +
+  labs(y = "Percent Abundance", title = "Epilithic biofilms") +
+  theme_minimal() +
+    scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))  
+topgen_box_B
+
+#mean percent abundance for each genily
+Mean_percent_abundance<-colMeans(gentemp_Bt)
+St.Dev<- sapply(gentemp_Bt, sd)
+name_rab<- colnames(gentemp_Bt)
+
+### Table of family mean percent abundance & st. deviation
+topgen_table_B<- data.frame(#name_rab,
+  Mean_percent_abundance,St.Dev)
+#topfam_table_B<-topfam_table_B[topfam_table_B$Mean_percent_abundance>0,]
+topgen_table_B
+
+```
+
+##genus, leaf
+```{r}
+gentemp_L<- gentemp_L[,colnames(gentemp_L)!="Unclassified_genus"]
+gentemp_Lt <-gentemp_L[,1:21]
+
+gen_long_L <- gather(gentemp_Lt, key = "Genus", value = "Percent_Abundance")
+gen_long_L$Genus <- factor(gen_long_L$Genus, levels = names(sort(colMeans(gentemp_Lt), decreasing = TRUE)))
+#fammertemp$fam<-row.names(fammertemp)
+#fammertemp$fam <- factor(fammertemp$fam, levels = fammertemp$fam[order(fammertemp$Mean_percent_abundance, decreasing = TRUE)])
+
+topgen_box_L<- ggplot(gen_long_L, aes(x=Genus, y=Percent_Abundance))+
+  geom_boxplot()+#fill = "skyblue", color = "black") +
+  labs(y = "Percent Abundance", title = "Leaf litter") +
+  theme_minimal() +
+    scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))  
+topgen_box_L
+
+#mean percent abundance for each genily
+Mean_percent_abundance<-colMeans(gentemp_Lt)
+St.Dev<- sapply(gentemp_Lt, sd)
+name_rab<- colnames(gentemp_Lt)
+
+### Table of family mean percent abundance & st. deviation
+topgen_table_L<- data.frame(#name_rab,
+  Mean_percent_abundance,St.Dev)
+#topfam_table_L<-topfam_table_L[topfam_table_L$Mean_percent_abundance>0,]
+topgen_table_L
+
+```
+
+
+##genus, sediment
+```{r}
+#Reorder from most abundant to least abundant
+#fammertemp <- fammertemp[,order(colSums(-fammertemp,na.rm=TRUE))]
+gentemp_S<- gentemp_S[,colnames(gentemp_S)!="Unclassified_genus"]
+gentemp_St <-gentemp_S[,1:21]
+
+gen_long_S <- gather(gentemp_St, key = "Genus", value = "Percent_Abundance")
+gen_long_S$Genus <- factor(gen_long_S$Genus, levels = names(sort(colMeans(gentemp_St), decreasing = TRUE)))
+#fammertemp$fam<-row.names(fammertemp)
+#fammertemp$fam <- factor(fammertemp$fam, levels = fammertemp$fam[order(fammertemp$Mean_percent_abundance, decreasing = TRUE)])
+
+topgen_box_S<- ggplot(gen_long_S, aes(x=Genus, y=Percent_Abundance))+
+  geom_boxplot()+#fill = "skyblue", color = "black") +
+  labs(y = "Percent Abundance", title = "Benthic sediment") +
+  theme_minimal() +
+    scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))  
+topgen_box_S
+
+#mean percent abundance for each genily
+Mean_percent_abundance<-colMeans(gentemp_St)
+St.Dev<- sapply(gentemp_St, sd)
+name_rab<- colnames(gentemp_St)
+
+### Table of family mean percent abundance & st. deviation
+topgen_table_S<- data.frame(#name_rab,
+  Mean_percent_abundance,St.Dev)
+#topfam_table_S<-topfam_table_S[topfam_table_S$Mean_percent_abundance>0,]
+topgen_table_S
+
+```
+table of top families and genera in each substrate
+
+```{r}
+
+plotout <- "Family_genus_relabun_substrate_03.15.2025.tiff"
+agg_tiff(filename=plotout, width=4800, height=5000, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+plot_grid(topfam_box_B,topgen_box_B,topfam_box_L,topgen_box_L,topfam_box_S,topgen_box_S, labels="AUTO",label_size = 18, ncol = 2)
+invisible(dev.off())
+
+write_csv(topgen_table_L, "top20genL_03.15.2025.csv")
+write_csv(topgen_table_B, "top20genB_03.15.2025.csv")
+write_csv(topgen_table_S, "top20genS_03.15.2025.csv")
+
+```
+
+## Differential abundance tests, Wilcoxon and Spearman
+
+Limited non-parametric tests for differential relative abundances of major taxa.
+```{r}
+### Basidiomycetes
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(p__Basidiomycota, lndrainage_area, method = "spearman"),
+    p_value = cor.test(p__Basidiomycota, lndrainage_area, method = "spearman")$p.value
+  )
+cor_summary
+
+
+### Asco classes
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(c__Leotiomycetes, lndrainage_area, method = "spearman"),
+    p_value = cor.test(c__Leotiomycetes, lndrainage_area, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(c__Leotiomycetes, lndrainage_area, method = "spearman"),
+    p_value = cor.test(c__Leotiomycetes, lndrainage_area, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Verrucariaceae, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Verrucariaceae, prc_wet, method = "spearman")$p.value
+  )
+cor_summary
+
+```
+
+
+```{}
+
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Verrucariaceae, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Verrucariaceae, prc_wet, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Helotiales_fam_Incertae_sedis, as.numeric(prc_wet), method = "spearman"),
+    p_value = cor.test(f__Helotiales_fam_Incertae_sedis, as.numeric(prc_wet), method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Helotiaceae, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Helotiaceae, prc_wet, method = "spearman")$p.value
+  )
+cor_summary
+
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Helotiales_fam_Incertae_sedis, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Helotiales_fam_Incertae_sedis, prc_wet, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Pleosporaceae, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Pleosporaceae, prc_wet, method = "spearman")$p.value
+  )
+cor_summary
+
+
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(c__Leotiomycetes, B_Chl.a_ug_per_cm2, method = "spearman"),
+    p_value = cor.test(c__Leotiomycetes, B_Chl.a_ug_per_cm2, method = "spearman")$p.value
+  )
+cor_summary
+
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Phaeosphaeriaceae, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Phaeosphaeriaceae, prc_wet, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Phaeosphaeriaceae, alpha.cent.wt, method = "spearman"),
+    p_value = cor.test(f__Phaeosphaeriaceae, alpha.cent.wt, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Inocybaceae, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Inocybaceae, prc_wet, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Inocybaceae, canopy_cover_percent, method = "spearman"),
+    p_value = cor.test(f__Inocybaceae, canopy_cover_percent, method = "spearman")$p.value
+  )
+cor_summary
+
+
+taxmerge_S<-taxmerge[taxmerge$substrate=='S',]
+
+cor_summary <- taxmerge_S %>%
+  summarize(
+    spearman_rho = cor(f__Inocybaceae, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Inocybaceae, prc_wet, method = "spearman")$p.value,
+    adjusted_spearman_rho = coef(summary(lm(f__Inocybaceae ~ canopy_cover_percent, data = ., method = "spearman")))[2, "Estimate"],
+    adjusted_p_value = coef(summary(lm(f__Inocybaceae ~ canopy_cover_percent, data = ., method = "spearman")))[2, "Pr(>|t|)"]
+  )
+cor_summary
+
+ino_flow<- lm(f__Inocybaceae ~ prc_wet + canopy_cover_percent, data=taxmerge_S)
+summary(ino_flow)
+
+order_ino<- taxmerge_S[rev(order(taxmerge_S$f__Inocybaceae)),]
+head(order_ino$f__Inocybaceae)
+head(order_ino$prc_wet)
+mean(head(order_ino$prc_wet))
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Phallaceae, canopy_cover_percent, method = "spearman"),
+    p_value = cor.test(f__Phallaceae, canopy_cover_percent, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Thelephoraceae, canopy_cover_percent, method = "spearman"),
+    p_value = cor.test(f__Thelephoraceae, canopy_cover_percent, method = "spearman")$p.value
+  )
+cor_summary
+
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Sebacinaceae, canopy_cover_percent, method = "spearman"),
+    p_value = cor.test(f__Sebacinaceae, canopy_cover_percent, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Mortierellaceae, canopy_cover_percent, method = "spearman"),
+    p_value = cor.test(f__Mortierellaceae, canopy_cover_percent, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Mortierellaceae, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Mortierellaceae, prc_wet, method = "spearman")$p.value
+  )
+cor_summary
+
+
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Cucurbitariaceae, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Cucurbitariaceae, prc_wet, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Verrucariaceae, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Verrucariaceae, prc_wet, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Mortierellaceae, prc_wet, method = "spearman"),
+    p_value = cor.test(f__Mortierellaceae, prc_wet, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Cucurbitariaceae, B_Chl.a_ug_per_cm2, method = "spearman"),
+    p_value = cor.test(f__Cucurbitariaceae, B_Chl.a_ug_per_cm2, method = "spearman")$p.value
+  )
+cor_summary
+
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Inocybaceae, canopy_cover_percent, method = "spearman"),
+    p_value = cor.test(f__Inocybaceae, canopy_cover_percent, method = "spearman")$p.value
+  )
+cor_summary
+
+cor_summary <- taxmerge %>%
+  group_by(substrate) %>%
+  summarize(
+    spearman_rho = cor(f__Thelephoraceae, canopy_cover_percent, method = "spearman"),
+    p_value = cor.test(f__Thelephoraceae, canopy_cover_percent, method = "spearman")$p.value
+  )
+cor_summary
+
+
+
+taxmerge_L <- taxmerge[taxmerge$substrate=='L',]
+
+
+taxmerge_L$Graminales <- as.factor(taxmerge_L$Graminales)
+stat.test <- taxmerge_L %>%
+wilcox_test(c__Leotiomycetes~Graminales) 
+stat.test
+
+effsize <- taxmerge_L %>%
+  wilcox_effsize(c__Leotiomycetes~Graminales)
+effsize
+
+taxmerge_L$wet_dry <- as.factor(taxmerge_L$wet_dry)
+stat.test <- taxmerge_L %>%
+wilcox_test(c__Leotiomycetes~wet_dry) 
+stat.test
+
+effsize <- taxmerge_L %>%
+  wilcox_effsize(c__Leotiomycetes~wet_dry)
+effsize
+```
+
+
+# FUNGAL TRAITS
+Micro-Eco package for heatmaps and FungalTraits
+```{r}
+#install.packages('microeco')
+#install.packages('file2meco')
+library(microeco)
+library(file2meco)
+##install.packages("file2meco")
+
+microecotest<- phyloseq2meco(pseqtest)
+#microecotest<- phyloseq2meco(pseqtest)
+# When the OTU number is large, using R WGCNA package to replace "base" will be faster
+# require WGCNA package, see https://chiliubio.github.io/microeco_tutorial/intro.html#wgcna for the installation
+
+microecotest$tidy_dataset()
+# create trans_network object
+#t1 <- trans_network$new(dataset = microecotest, cal_cor = "base", taxa_level = "OTU", filter_thres = 0.000001, cor_method = "spearman")
+# create correlation network 
+#t1$cal_network(p_thres = 0.05, COR_cut = 0.6)
+# add modules
+#t1$cal_module()
+# calculate node topological properties
+#t1$cal_node_type()
+#node_type_table <- t1$res_node_type
+# save network
+# open the gexf file using Gephi(https://gephi.org/)
+# require rgexf package
+#library(rgexf)
+#t1$save_network(filepath = "network.gexf")
+
+# show 40 taxa at Genus level
+t1 <- trans_abund$new(dataset = microecotest, taxrank = "Family", ntaxa = 15)
+t1$plot_heatmap(facet = "flow_state", xtext_keep = FALSE, withmargin = FALSE)
+
+```
+
+
+```{r}
+
+# create trans_func object
+t2 <- trans_func$new(microecotest)
+
+# fungi_database = "FungalTraits" for the FungalTraits database
+t2$cal_spe_func(fungi_database = "FungalTraits")
+
+write.csv(t2$res_spe_func,"FungalTraits_ASV_tab_microeco_03.08.2025.csv")
+
+### How many ASVs were assigned functional traits?
+## total number of ASVs in rarefied data:
+ncol(pseqtest@otu_table)
+
+#number of ASVs with functions assigned:
+nrow(t2$res_spe_func) ##ASVs checked against fungaltraits
+rows<- rowSums(t2$res_spe_func)
+no.function<- rows[rows==0]
+length(no.function) #ASVs with no traits assigned
+nrow(t2$res_spe_func)-length(no.function)
+((nrow(t2$res_spe_func)-length(no.function))/nrow(t2$res_spe_func)) #proportion of ASVs assigned traits
+### ~65% of ASVs assigned traits
+
+# calculate abundance-unweighted functional redundancy of each trait for each network module
+t2$cal_spe_func_perc(#use_community = TRUE
+  )
+relabun_func<-t2$res_spe_func_perc
+#t2$res_spe_func_perc
+write.csv(relabun_func, "functional_group_percent_abundance_03.08.2025.csv")
+```
+
+functional analysis
+```{r}
+
+#View(func_relabun)
+#relabun_func
+perc_func_env<- merge(samdftest,relabun_func,by="row.names")
+row.names(perc_func_env) <- perc_func_env$Row.names
+
+### mean percent abundance of dominant groups (out of classified reads)
+func_prop<- perc_func_env[96:117]/100 
+mean(rowSums(func_prop)) ### mean proportion of total reads classified
+func_prop<- perc_func_env[96:117]/(100*mean(rowSums(func_prop))) ### for percents out of classified reads, not total reads
+mean(func_prop$`primary_lifestyle|litter_saprotroph`)
+mean(func_prop$`primary_lifestyle|plant_pathogen`)
+
+func_perc<- perc_func_env[96:117]/rowSums(perc_func_env[96:117]) 
+rowSums(func_perc)
+func_perc <- merge(samdftest,func_perc,by="row.names")
+row.names(func_perc) <- func_perc$Row.names
+colnames(func_perc) <- gsub("^.+\\|", "", colnames(func_perc))
+
+
+library(rstatix)
+### lichen by substrate
+stat.test <- func_perc %>%
+wilcox_test(lichenized ~ substrate) %>%
+ adjust_pvalue(method = "bonferroni") %>%
+  add_significance()
+stat.test
+effsize <- func_perc %>%
+  wilcox_effsize(lichenized ~substrate)
+effsize
+
+### litter sap by substrate
+stat.test <- func_perc %>%
+wilcox_test(litter_saprotroph ~ substrate) %>%
+ adjust_pvalue(method = "bonferroni") %>%
+  add_significance()
+stat.test
+effsize <- func_perc %>%
+  wilcox_effsize(litter_saprotroph ~substrate)
+effsize
+
+### soil saprotroph by substrate
+stat.test <- func_perc %>%
+wilcox_test(soil_saprotroph ~ substrate) %>%
+ adjust_pvalue(method = "bonferroni") %>%
+  add_significance()
+stat.test
+effsize <- func_perc %>%
+  wilcox_effsize(soil_saprotroph ~substrate)
+effsize
+
+### ectomycorrhizae by substrate
+stat.test <- func_perc %>%
+wilcox_test(ectomycorrhizal ~ substrate) %>%
+ adjust_pvalue(method = "bonferroni") %>%
+  add_significance()
+stat.test
+effsize <- func_perc %>%
+  wilcox_effsize(ectomycorrhizal ~substrate)
+effsize
+
+
+
+```
+```{r}
+## [1] "substrate" "PRC_WET_GROUP", sites kmeans clustered by annual percent wet (k=3)
+phylamet<-data.frame("Sample"=row.names(samdftest),
+                     "Substrate"=samdftest$substrate,
+                     "Site"=samdftest$siteid,
+                     stringsAsFactors=T)
+#merge metadata with major taxa data
+phylalong <- merge(phylalong, phylamet)
+phylamet<-data.frame("Sample"=row.names(samdftest),
+                     "Drainage_area"=samdftest$drainage_area,
+                     "Annual_Percent_Wet"=samdftest$prc_wet)
+#merge metadata with major taxa data
+phylalong <- merge(phylalong, phylamet)
+#Summarize by depth and hydration
+phyla_summary <- 
+  phylalong %>% # the names of the new data frame and the data frame to be summarised
+  group_by(Substrate, Site, Major_Taxa) %>%   # the grouping variable
+  summarise(mean_prop = mean(Proportion), drainage_area = Drainage_area) #%>%
+ # summarise(drainage_area = Drainage_area)# calculates the mean of each group
+## `summarise()` has grouped output by 'Depth', 'Hydration'. You can override using the `.groups` argument.
+phyla_summary
+
+phyla_summary$Substrate <- factor(phyla_summary$Substrate,
+                                 levels=c("B","L","S")) #reorder variables
+phyla_summary$Site <- fct_reorder(phyla_summary$Site, phyla_summary$drainage_area)
+```
+
+```{r}
+ptab<- otu_table(pseqtest)
+rowSums(ptab)
+# Remove any prefix followed by '|'
+colnames(perc_func_env) <- gsub("^.+\\|", "", colnames(perc_func_env))
+
+func_prop<- perc_func_env[97:118]/100 ###rowSums(perc_func_env[127:148])
+rowSums(func_prop)
+#func_prop <- func_prop
+#Add taxa names as a column
+func_prop$functional_groups <- row.names(func_prop)
+
+#transform into long format
+func_proplong <- gather(func_prop, Sample, Proportion, -functional_groups)
+colnames(func_proplong)<- c("Sample", "functional_groups", "Proportion")
+## [1] "substrate" "WetDry"
+funcmet<-data.frame("Sample"=row.names(perc_func_env),
+                     "Substrate"=perc_func_env$substrate,
+                     "Site"=perc_func_env$siteid,
+                     stringsAsFactors=T)
+row.names(funcmet)<- funcmet$Sample
+
+func_proplong <- merge(func_proplong, funcmet, by="Sample")
+funcmet<-data.frame("Sample"=row.names(perc_func_env),
+                     "Drainage_area"=perc_func_env$drainage_area,
+                     "Annual_Percent_Wet"=perc_func_env$prc_wet)
+
+#merge metadata with major taxa data
+func_proplong <- merge(func_proplong, funcmet, by="Sample")
+#Summarize by depth and hydration
+phyla_summary <- 
+  func_proplong %>% # the names of the new data frame and the data frame to be summarised
+  group_by(Substrate, Site, functional_groups) %>%   # the grouping variable
+  summarise(mean_prop = mean(Proportion), drainage_area = Drainage_area)  # calculates the mean of each group
+## `summarise()` has grouped output by 'Depth', 'Hydration'. You can override using the `.groups` argument.
+phyla_summary
+
+phyla_summary$Substrate <- factor(phyla_summary$Substrate,
+                                 levels=c( "B", "L","S")) #reorder variables
+phyla_summary$Site <- fct_reorder(phyla_summary$Site, phyla_summary$drainage_area)
+#phyla_summary$Wet.Dry <- factor(phyla_summary$Wet.Dry, levels= c("WET","DRY")) #reorder variables
+phyla_summary$functional_groups <- factor(phyla_summary$functional_groups)
+
+sublab<- c("Epilithic biofilms", "Leaf litter", "Benthic sediment")
+names(sublab)<- c("B","L","S")
+
+pal12 <- rev(cols25(n=22)) #set n= to the number of taxa you are plotting
+#make stacked bar plot
+phylum_bar <- ggplot(phyla_summary, aes(x = Site, y = mean_prop, fill = functional_groups))+
+  geom_bar(stat = "identity", col=I("black")) +
+  scale_fill_manual(values=pal12)+
+  guides(fill=guide_legend(ncol=1))+
+  facet_wrap(~Substrate, labeller = labeller(Substrate=sublab), nrow=1, scales="free_x") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100))+
+  labs(x="Substrate", y="Percentage of Identified ITS Sequence Copies",
+       fill="functional_groups")+
+  #scale_facet_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+    theme(axis.text.x = element_text(angle=60, hjust=1), legend.position = "right")+
+  theme(text=element_text(size=20), #change font size of all text
+        axis.text.x=element_text(size=7), #change font size of axis text
+       # axis.title=element_text(size=16), #change font size of axis titles
+        #plot.title=element_text(size=16), #change font size of plot title
+        legend.text=element_text(size=16), #change font size of legend text
+       # strip.text.x = element_text(size = 10),
+        legend.title=element_text(size=16)) #change font size of legend title  
+phylum_bar
+  #######
+ 
+#c(180,100) *
+#  0.0394 * # convert mm to inch
+#  600 # convert to pixels
+## [1] 4255.2 2364.0
+plotout <- "Functional Barplot_site_drainage_03.15.2025.tiff"
+agg_tiff(filename=plotout, width=6000, height=2750, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+phylum_bar
+invisible(dev.off())
+
+  
+```
+
+Plot aquatic!!!
+```{r}
+
+func_prop<- perc_func_env[171:174]/100
+rowSums(func_prop)
+#func_prop <- func_prop
+#Add taxa names as a column
+func_prop$functional_groups <- row.names(func_prop)
+
+#transform into long format
+func_proplong <- gather(func_prop, Sample, Proportion, -functional_groups)
+colnames(func_proplong)<- c("Sample", "functional_groups", "Proportion")
+## [1] "substrate" "WetDry"
+funcmet<-data.frame("Sample"=row.names(perc_func_env),
+                     "Substrate"=perc_func_env$substrate,
+                     "Wet.Dry"=perc_func_env$wet_dry,
+                     stringsAsFactors=T)
+row.names(funcmet)<- funcmet$Sample
+#merge metadata with major taxa data
+func_proplong <- merge(func_proplong, funcmet, by="Sample")
+#Summarize by depth and hydration
+phyla_summary <- 
+  func_proplong %>% # the names of the new data frame and the data frame to be summarised
+  group_by(Substrate, Wet.Dry, functional_groups) %>%   # the grouping variable
+  summarise(mean_prop = mean(Proportion))  # calculates the mean of each group
+## `summarise()` has grouped output by 'Depth', 'Hydration'. You can override using the `.groups` argument.
+phyla_summary
+
+phyla_summary$Substrate <- factor(phyla_summary$Substrate,
+                                 levels=c( "B", "L","S")) #reorder variables
+phyla_summary$Wet.Dry <- factor(phyla_summary$Wet.Dry, levels= c("WET","DRY")) #reorder variables
+phyla_summary$functional_groups <- factor(phyla_summary$functional_groups)
+
+sublab<- c("Epilithic biofilms", "Leaf litter", "Benthic sediment")
+names(sublab)<- c("B","L","S")
+phyla_summary$functional_groups <- factor(phyla_summary$functional_groups, levels=c("freshwater","partly_aquatic","marine","non-aquatic"))
+
+pal12 <- cols25(n=5) #set n= to the number of taxa you are plotting
+#make stacked bar plot
+phylum_bar <- ggplot(phyla_summary, aes(x = Wet.Dry, y = mean_prop, fill = functional_groups))+
+  geom_bar(stat = "identity", col=I("black")) +
+  scale_fill_manual(values=pal12)+
+  guides(fill=guide_legend(ncol=1))+
+  facet_wrap(~Substrate, labeller = labeller(Substrate=sublab), nrow=1, scales="free_x") +
+  labs(x="Substrate", y="Percentage of Identified ITS Sequence Copies",
+       fill="functional_groups")+
+  #scale_facet_discrete(labels=c('B'='Epilithic biofilms', 'L'='Leaf litter', 'S'='Benthic sediment', 'W'='Surface water'))+
+  theme(axis.text.x = element_text(angle=60, hjust=1), legend.position = "right")+
+  theme(text=element_text(size=16), #change font size of all text
+        axis.text=element_text(size=11), #change font size of axis text
+        axis.title=element_text(size=11), #change font size of axis titles
+        plot.title=element_text(size=11), #change font size of plot title
+        legend.text=element_text(size=11), #change font size of legend text
+        legend.title=element_text(size=11)) #change font size of legend title  
+phylum_bar
+ 
+#c(180,100) *
+#  0.0394 * # convert mm to inch
+#  600 # convert to pixels
+## [1] 4255.2 2364.0
+plotout <- "Functional Barplot_aquatic_WetDry002_03162025.tiff"
+agg_tiff(filename=plotout, width=3200, height=1800, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+phylum_bar
+invisible(dev.off())
+
+```
+
+
