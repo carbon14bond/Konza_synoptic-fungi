@@ -36,7 +36,7 @@ Long-term burn history data from Konza LTER:
 
 
 #### Working data
-For ease of use, I have included a combined metadata table with all environmental data used
+For ease of use, in the phyloseq_tabs folder, I have included a compressed file (fall2023.zip) containing the combined metadata table with all processed environmental data used, along with ASV counts and taxonomy used in the data analysis R markdown document. 
 
 
 ### Outputs
