@@ -29,6 +29,16 @@ Bond, C. T., E. Stanley, K. A. Kuehn (2024). AIMS_GP_approach3_CHLA, HydroShare,
 Stream Temperature, Intermittency, and Conductivity (STIC) logger data: 
 Wheeler, C., S. Zipper (2023). South Fork Kings Creek (Konza) Stream Temperature, Intermittency, and Conductivity Data, HydroShare, http://www.hydroshare.org/resource/d9510181f4164a5eba063d75e3fd1395
 
+StreamDAG connectivity metrics (see konza_full network in R package StreamDAG): 
+Aho, K., C. Kriloff, S. E. Godsey, R. Ramos, C. Wheeler, Y. You, S. Warix, D. Derryberry, S. Zipper, R. L. Hale, C. T. Bond, and K. A. Kuehn. 2023. Non-perennial stream networks as directed acyclic graphs: The R-package streamDAG. Environmental Modelling & Software 167:105775.
+
+Long-term burn history data from Konza LTER:
+
+
+#### Working data
+For ease of use, I have included a combined metadata table with all environmental data used
+
+
 ### Outputs
 I have posted knitted documents of the current versions of the bioinformatics pipeline (Appendix S1) and data analysis (Appendix S2) on Rpubs for reference.
 
