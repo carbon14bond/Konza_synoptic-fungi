@@ -1,0 +1,347 @@
+---
+title: "Map and Metadata Preparation"
+author: "Charles T. Bond"
+date: "10/25/2023"
+output: html_document
+---
+### Setup
+```{r setup, include=FALSE}
+rm(list = ls())
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/Users/chunk/AIMS_Konza_synoptic_ITS_community/metaprep")
+knitr::opts_knit$set(root.dir = "/Users/chunk/AIMS_Konza_synoptic_ITS_community/metaprep")
+```
+
+```{r, library}
+library(tidyverse)
+library(RColorBrewer)
+#library(ggpubr)
+```
+
+
+# Metadata preparation
+We are pulling from multiple published sources for our metadata, which are published in part on the AIMS project hydroshare page (https://www.hydroshare.org/group/247) listed as follows:
+
+NOTE: *If you are replicating this code*, please note that we will not be hosting this data on github, you can download site characteristics and cholorphyll-a from the following links:
+
+### Site physical characteristics
+Ramos, R., A. Burgin, S. Zipper (2023). Konza_Synoptic_Physical_Characteristics, HydroShare, http://www.hydroshare.org/resource/95c18f7643534def99d40b7b07971bee
+
+
+### Chlorophyll-a data
+Bond, C. T., K. A. Kuehn, E. Stanley (2023). Konza_Synoptic_Chorophyll, HydroShare, http://www.hydroshare.org/resource/01135480279340cd8e457a22e7b9208b
+
+
+### Merging tables
+```{r}
+## Field datasheet data on Leaf data, and long-term STIC data, are in the following table 'meta_base'
+setwd("/Users/chunk/AIMS_Konza_synoptic_ITS_community/metaprep")
+meta_base <- read.csv("meta_base_kzsynITS.csv")
+#View(meta_base)
+
+### AIMS Konza synoptic Physical Characteristics table was published seperately
+### Download sitee characteristics from the link abovee for current data.
+Konza_Synoptic_Physical_Characteristics <- read.csv("/Users/chunk/AIMS_Konza_synoptic_ITS_community/metaprep/Konza_Synoptic_Physical_Characteristics.csv")
+
+#merge by siteid
+meta_tab<- merge(meta_base,Konza_Synoptic_Physical_Characteristics, by="siteid", all=TRUE)
+```
+
+## StreamDAG connectivity metrics
+```{r}
+# newest streamDAG
+#library(devtools)
+#install_github("moondog1969/streamDAG")
+library(streamDAG)
+data(AIMS.node.coords)
+kon_full <- streamDAGs("konza_full")
+
+data(kon_coords)
+spatial.plot(kon_full, kon_coords[,3], kon_coords[,2], names = kon_coords[,1])
+A.mult(kon_full, power = 6, text.summary = TRUE)
+
+data("kon_lengths")
+
+
+# now, we want to set nodes at dry sites as absent in order account for disconnections in the network in our local network connectivity metrics, and then we want to weigh alpha centrality ('node importance') by flowing upstream network length...
+
+meta_tab$wetdrybin <- ifelse(meta_tab$flow_state == "dry", 0, 1)
+meta_tab$wetdrybin
+
+
+##there is probably a shorter way to get the wet/dry binary vector for the 46 sites, but this does the job. 
+local <- as.data.frame(local.summary(kon_full))
+t.local<- as.data.frame(t(local)) %>%
+  rownames_to_column(var="siteid")
+t.local$siteid <- substr(t.local$siteid, 1, nchar(t.local$siteid) - 2)
+t.local$nrow<- 1:nrow(t.local)
+temptab<- merge(meta_tab,t.local, by="siteid") ### all = FALSE give just the 46 sites, TRUE give all 50.
+temptab<- temptab[order(temptab$nrow), ]
+#meta_tab[meta_tab$wetdrybin==0,]
+#tempsite<- temptab[temptab$wetdrybin==0,]
+#tempsite$siteid
+#temptab[temptab$flow_state=='dry',]
+
+drybin<- temptab$wetdrybin
+temptab$wetdrybin
+drybin
+
+npbin<- temptab$notpoolbin
+temptab$notpoolbin
+npbin
+
+
+kon_graphw <- kon_full
+
+
+### now, because the node for 20M03 is missing, the arc for 20M04_1->20M02_1 was not deleted, despite 20M02 being a disconnected pool at the time we sampled. I will manually remove te arc for 20M04_1->20M02_1.
+#rm.arcs.bin<- ifelse(E(kon_graphw) == "20M04_1->20M02_1", 0, 1)
+rm.arcs.bin <- c(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)
+
+kon_graphw<- delete.arcs.pa(kon_graphw,rm.arcs.bin)
+kon_graphw
+
+kon_graphw<- delete.nodes.pa(kon_graphw,drybin)
+kon_graphw
+
+
+spatial.plot(kon_graphw, kon_coords[,3], kon_coords[,2], plot.dry = TRUE, names = kon_coords[,1])
+wetlength<- kon_lengths[E(kon_graphw),]
+
+#kon_graphw<- delete.edges(kon_graphw,drybin)
+E(kon_graphw)$weight <- wetlength$Lengths
+sia <- size.intact.to.arc(kon_graphw)
+sin<- size.intact.to.node(kon_graphw, node="all")
+
+
+
+kon_graphw2 <- kon_graphw
+E(kon_graphw2)$weight <- sia
+E(kon_graphw2)$weight
+ac <- local.summary(kon_graphw2, "alpha.cent") 
+#ac <- local.summary(kon_graphw2, "alpha.cent") 
+
+##Local Measures for 46/50 of the transects included in this stude
+local <- as.data.frame(local.summary(kon_graphw))
+t.local<- as.data.frame(t(local)) %>%
+  rownames_to_column(var="siteid")
+t.local$siteid <- substr(t.local$siteid, 1, nchar(t.local$siteid) - 2)
+
+t.local$alpha.cent.wt<- log(1+ac)
+t.local$flowing.upstream.length.m<- sin
+head(t.local)
+plot(t.local$flowing.upstream.length.m,t.local$alpha.cent)
+plot(log(1+t.local$flowing.upstream.length.m),log(1+t.local$alpha.cent.wt))
+```
+
+Merge stream dag local measures to meta_tab...
+```{r}
+meta_tab<- merge(meta_tab,t.local, by="siteid", all=TRUE)
+
+```
+
+Great, now add chlorophyll
+```{r}
+## load chlorophyll data
+###### Down
+Chla<- read.csv("/Users/chunk/AIMS_Konza_synoptic_ITS_community/metaprep/CHLA_GP_approach3_20210605_20210607.V1.0.csv")
+#merge by siteid
+meta_tab<- merge(meta_tab,Chla, by="siteid", all=TRUE)
+
+```
+
+
+Calculating Burn Intervals:
+Prescribed burns were planned at the Konza Prairie Station at 1, 2, 4, and 20-year intervals, but wildfires and various conditions may have altered that timeline. When wildfires broke out, the rest of a burn area were prescribe burned ahead of schedule for consistency, so we will calculate the actual average time interval between burns since 1980, when prescribed burning began.
+
+```{r}
+burn_tab<- read.csv("/Users/chunk/AIMS_Konza_synoptic_ITS_community/metaprep/kfh011_0.csv")
+2021-1980
+## 41 year period
+
+## Note I manually removed burns that occurred in the same year in the same watershed, for instance, N1A was burned on 4/19/84 and 4/28/84, and so really represent one burn eveent spreead over a couple weeks. 
+
+### Tally the number of years each watershed was burned from 1980-2021.
+base::table(burn_tab$Watershed)
+
+## Divide 41 years by number of burned years to get interval of times between burned years
+bt<- as.data.frame(41/base::table(burn_tab$Watershed))
+bt$burn_area<- bt$Var1
+bt$burn_interval<- bt$Freq
+bt<- bt[,3:4]
+## Mean interval of time (years) between burned years
+#     N1A      N1B     N20B      N2B      N4B      N4D 
+#1.051282 1.205882 6.833333 2.277778 3.416667 4.100000 
+#Checking we have all burn area covered:
+unique(meta_tab$burn_area)  
+  
+meta_tab<- merge(meta_tab,bt, by="burn_area", all=TRUE)
+
+```
+
+
+
+
+
+
+
+Export metadata
+```{r}
+write.csv(meta_tab, "/Users/chunk/AIMS_Konza_synoptic_ITS_community/metatab030625.csv")
+
+```
+
+Now, since each site can have multiple as many as 4 substrates with sequencing results, we need to make the table work with our phyloseq object downstream. 
+```{r}
+
+meta_tab<- read.csv("/Users/chunk/AIMS_Konza_synoptic_ITS_community/metatab030725_m.csv")
+
+substrates<- read.csv("/Users/chunk/AIMS_Konza_synoptic_ITS_community/metaprep/kz.syn.ITS.substrates.csv")
+#merge by siteid
+
+meta_tab<- merge(substrates,meta_tab, by="siteid", all=TRUE)
+rownames(meta_tab)<-meta_tab$Sample
+
+write.csv(meta_tab, "/Users/chunk/AIMS_Konza_synoptic_ITS_community/submetatab030625.csv")
+
+```
+
+##Konza map
+Now, downloaded stream shapefile from here: http://www.konza.ksu.edu/map/
+```{r}
+
+# for loading our data
+#library(jsonlite)
+#library(rgdal)
+library(sf)
+# for plotting
+#library(extrafont)
+#library(ggplot2)
+#library(ggspatial)
+#library(patchwork)
+#library(scico)
+#library(vapoRwave)
+# for data wrangling
+#library(dplyr)
+#konza_strs<- read_sf("GIS210.shp")
+
+#Set theme
+theme_set(theme_bw() + theme(
+              plot.title = element_text(size=20, color="black"),
+              axis.text.x = element_text(size=15, color="black"),
+              axis.text.y = element_text(size=15, color="black"),
+              axis.title.x = element_text(size=15),
+              axis.title.y = element_text(size=15),
+              legend.text = element_text(size=12),
+              legend.title = element_text(size=15),
+            #  legend.position = "bottom",
+            #  legend.key=element_blank(),
+            #  legend.key.size = unit(0.5, "cm"),
+            #  legend.spacing.x = unit(0.1, "cm"),
+            #  legend.spacing.y = unit(0.1, "cm"),
+              panel.background = element_blank(), 
+              #panel.border = element_rect(colour = "black", fill=NA, size=1),
+              plot.background = element_blank()))
+
+
+kzmap<- st_read("GIS210.shp")
+
+kzmapbig_ll <- st_transform(kzmap, "+proj=longlat +ellps=WGS84 +datum=WGS84")
+
+#head(st_coordinates(kzmap_ll))
+# Check the extent of the transformed data
+print(st_bbox(kzmapbig_ll))
+
+# Check the CRS of the transformed data
+print(st_crs(kzmapbig_ll))
+
+strmp1 <- ggplot(data = kzmapbig_ll) +
+  geom_sf() +
+  coord_sf(ylim=c(39.0700, 39.095000), xlim = c(-96.60000, -96.56500))
+strmp1
+
+## percent wet color scale, same as for dbRDA plots
+pal<- c("#046C9A","#3A9AB2","#85B7B9","#ADC397","#DCCB4E","#E5A208","#ED6E04","#F11B00") # too red
+common_limits <- c(0, 1) 
+sticwet<- ggplot(data=meta_tab, aes(x=long, y=lat, colour=prc_wet))+
+  geom_point(size=3.5)+
+  scale_colour_gradientn(colors = rev(pal), labels = scales::percent_format(), limits = common_limits)
+sticwet
+
+mapmap <- ggplot() +
+  geom_sf(data = kzmapbig_ll) +
+  coord_sf(ylim=c(39.070, 39.093), xlim = c(-96.595, -96.565))+
+  geom_point(data=meta_tab, aes(x=long, y=lat, colour=prc_wet, shape=flow_state), size=3.3)+
+  scale_colour_gradientn(colors = rev(pal), labels = scales::percent_format(), limits = common_limits)+
+  labs(legend="right" ,shape="Flow state:", color="Percent wet:", x="Longitude", y="Latitude"
+      )+ 
+ theme(axis.text.x = element_text(size = 8), axis.text.y = element_text(size = 8))
+mapmap
+
+summary(meta_tab$prc_wet)
+sd(meta_tab$prc_wet)
+```
+
+
+```{r}
+#Konza_StreamNetwork.shp
+
+kzmapzip<- st_read("Konza_StreamNetwork.shp")
+kzmap_ll <- st_transform(kzmapzip, "+proj=longlat +ellps=WGS84 +datum=WGS84")
+
+kzws<- st_read("Konza_Watershed.shp")
+kzws_ll <- st_transform(kzws, "+proj=longlat +ellps=WGS84 +datum=WGS84")
+
+kzmap<- st_read("GIS210.shp")
+kzmapbig_ll <- st_transform(kzmap, "+proj=longlat +ellps=WGS84 +datum=WGS84")
+
+#head(st_coordinates(kzmap_ll))
+# Check the extent of the transformed data
+print(st_bbox(kzmap_ll))
+print(st_bbox(kzws_ll))
+# Check the CRS of the transformed data
+print(st_crs(kzmap_ll))
+print(st_crs(kzws_ll))
+
+
+strmp1 <- ggplot() +
+  geom_sf(data = kzws_ll) +
+  geom_sf(data = kzmap_ll) +
+  coord_sf(ylim=c(39.0700, 39.095000), xlim = c(-96.60000, -96.56500))
+strmp1
+
+## percent wet color scale, same as for dbRDA plots
+pal<- c("#046C9A","#3A9AB2","#85B7B9","#ADC397","#DCCB4E","#E5A208","#ED6E04","#F11B00") # too red
+common_limits <- c(0, 1) 
+sticwet<- ggplot(data=meta_tab, aes(x=long, y=lat, colour=prc_wet))+
+  geom_point(size=3.5)+
+  scale_colour_gradientn(colors = rev(pal), labels = scales::percent_format(), limits = common_limits)
+sticwet
+
+mapmap <- ggplot() +
+  geom_sf(data = kzmapbig_ll) +
+  geom_sf(data = kzws_ll) +
+  geom_sf(data = kzmap_ll) +
+  coord_sf(ylim=c(39.0705, 39.095), xlim = c(-96.598, -96.562))+
+  geom_point(data=meta_tab, aes(x=long, y=lat, colour=prc_wet, shape=flow_state), size=3.3)+
+  scale_colour_gradientn(colors = rev(pal), labels = scales::percent_format(), limits = common_limits)+
+  labs(legend="right" ,shape="Flow state:", color="Annual percent wet:", x="Longitude", y="Latitude"
+      )+ 
+ theme(axis.text.x = element_text(size = 8), axis.text.y = element_text(size = 8), legend.title=element_text(size=10), 
+    legend.text=element_text(size=10))
+mapmap
+
+summary(meta_tab$prc_wet)
+sd(meta_tab$prc_wet)
+
+plotout <- "Konza_annual_prc_wet_ITSpaper_CTB_030625.tiff"
+agg_tiff(filename=plotout, width=2000, height=1400, units="px",
+         pointsize=10, res=600, compression="lzw", scaling=0.5)
+mapmap
+invisible(dev.off())
+```
+
+
+
+
+
