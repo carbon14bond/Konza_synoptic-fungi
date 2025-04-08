@@ -7,7 +7,7 @@ This research was conducted as part of the AIMS Project (Aquatic Intermittency e
 This pipeline is composed of two main components: 
 1) Bioinformatics / processing of amplicon sequences to prouce ASVs following the DADA2 pipeline.
 2) Analysis of fungal communities with environmental data.
-We also include code for generating maps and calculating some environmental parameters from previously publisshed environmental datasets.
+We also include code for generating maps and calculating some environmental parameters from previously published environmental datasets.
 
 ### DATA AVAILABILITY.
 Links to each dataset are provided below. 
@@ -32,7 +32,8 @@ Wheeler, C., S. Zipper (2023). South Fork Kings Creek (Konza) Stream Temperature
 StreamDAG connectivity metrics (see konza_full network in R package StreamDAG): 
 Aho, K., C. Kriloff, S. E. Godsey, R. Ramos, C. Wheeler, Y. You, S. Warix, D. Derryberry, S. Zipper, R. L. Hale, C. T. Bond, and K. A. Kuehn. 2023. Non-perennial stream networks as directed acyclic graphs: The R-package streamDAG. Environmental Modelling & Software 167:105775.
 
-Long-term burn history data from Konza LTER:
+Long-term burn history data from Konza LTER: 
+Blair, J., and P. O’Neal 2024. KFH01 Konza prairie fire history ver 19., Environmental Data Initiative. 
 
 
 #### Working data
