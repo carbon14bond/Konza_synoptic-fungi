@@ -45,4 +45,4 @@ I have posted knitted documents of the current versions of the bioinformatics pi
 
 APPENDIX S1. Bioinformatics pipeline in R with code used to generate ASV count table and taxonomy table from raw FASTQ sequencing data, available online: https://rpubs.com/carbon14bond/kzsynITS_09152023_CTB
 APPENDIX S2. Data analysis R code, including statistical tests and figure generation. 
-https://rpubs.com/carbon14bond/Appendix_S2_Bond_ITS_data_analysisx_S2
+https://rpubs.com/carbon14bond/Appendix_S2_Konza_ITS_data_analysis_Bond_4-15-2025
